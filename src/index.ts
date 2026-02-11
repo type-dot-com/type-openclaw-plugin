@@ -84,7 +84,10 @@ const typePlugin = {
       if (!activeOutbound) {
         return { ok: false, error: "Not connected" };
       }
-      activeOutbound.sendMessage(to, text, replyToId);
+      const sent = activeOutbound.sendMessage(to, text, replyToId);
+      if (!sent) {
+        return { ok: false, error: "Failed to send message" };
+      }
       return { ok: true, channel: "type" };
     },
   },

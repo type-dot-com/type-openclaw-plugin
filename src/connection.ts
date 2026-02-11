@@ -71,9 +71,11 @@ export class TypeConnection {
   private doConnect(): void {
     if (this.stopped) return;
 
-    const url = `${this.config.wsUrl}?token=${encodeURIComponent(this.config.token)}`;
-
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(this.config.wsUrl, {
+      headers: {
+        Authorization: `Bearer ${this.config.token}`,
+      },
+    });
     this.ws = ws;
 
     ws.on("open", () => {
