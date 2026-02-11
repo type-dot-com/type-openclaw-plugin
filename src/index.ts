@@ -187,66 +187,57 @@ const typePlugin = {
               Timestamp: msg.timestamp,
             });
 
-            // Dispatch through the standard agent reply pipeline with block-level streaming.
-            // deliver is called per text block as the agent generates, enabling
-            // progressive delivery. Each block is streamed to Type as a token event.
+            // Lazy stream_start: don't send until the first onPartialReply
+            // fires (i.e., actual text is being generated). This avoids the
+            // 30s idle timeout when the agent spends time on tool calls.
             //
-            // IMPORTANT: stream_start must be acked by the server before sending
-            // stream_event, because the server does async DB validation before
-            // creating the stream state. Without this gate, stream_event arrives
-            // before the state exists and gets rejected.
-            let streamStarted = false;
+            // Since onPartialReply is synchronous, we buffer deltas until
+            // the stream_start ack arrives, then flush them.
             let streamFailed = false;
-            let streamReady: Promise<void> | null = null;
-            void runtime.channel.reply
-              .dispatchReplyWithBufferedBlockDispatcher({
-                ctx: ctxPayload,
-                cfg: ctx.cfg,
-                dispatcherOptions: {
-                  deliver: async (payload) => {
-                    if (!payload.text || !activeOutbound || streamFailed)
-                      return;
-                    console.log(
-                      `[type] deliver: streamStarted=${streamStarted}, textLen=${payload.text.length}`,
-                    );
-                    if (!streamStarted) {
-                      // Create a promise that resolves when server acks stream_start
-                      streamReady = new Promise<void>((resolve, reject) => {
-                        pendingStreamStart = { resolve, reject };
-                        // Timeout after 5s in case server never responds
-                        setTimeout(() => {
-                          if (pendingStreamStart) {
-                            pendingStreamStart.reject(
-                              new Error("stream_start ack timeout"),
-                            );
-                            pendingStreamStart = null;
-                          }
-                        }, 5000);
-                      });
-                      const started = activeOutbound.startStream(msg.messageId);
-                      if (!started) {
-                        console.error(
-                          "[type] startStream send failed (connection not open)",
-                        );
-                        streamFailed = true;
-                        pendingStreamStart = null;
-                        return;
-                      }
-                      streamStarted = true;
-                    }
-                    // Wait for server to ack stream_start before sending tokens
-                    try {
-                      await streamReady;
-                    } catch (err) {
-                      console.error(
-                        `[type] stream_start rejected: ${err instanceof Error ? err.message : String(err)}`,
-                      );
-                      streamFailed = true;
-                      return;
-                    }
+            let streamStarted = false;
+            let streamReady = false;
+            let lastSentLength = 0;
+
+            // Buffers waiting on stream_start ack
+            const pendingTokens: string[] = [];
+            const pendingToolEvents: Array<{
+              kind: string;
+              [key: string]: unknown;
+            }> = [];
+
+            const startStreamAndFlush = () => {
+              if (!activeOutbound) return;
+              const started = activeOutbound.startStream(msg.messageId);
+              if (!started) {
+                console.error(
+                  "[type] startStream send failed (connection not open)",
+                );
+                streamFailed = true;
+                return;
+              }
+              streamStarted = true;
+
+              // When ack arrives, flush buffered events
+              let ackTimeoutId: ReturnType<typeof setTimeout> | null = null;
+              pendingStreamStart = {
+                resolve: () => {
+                  if (ackTimeoutId) {
+                    clearTimeout(ackTimeoutId);
+                    ackTimeoutId = null;
+                  }
+                  streamReady = true;
+                  // Flush tool events first (they came before text)
+                  for (const evt of pendingToolEvents) {
+                    if (streamFailed || !activeOutbound) break;
+                    activeOutbound.streamEvent(msg.messageId, evt);
+                  }
+                  pendingToolEvents.length = 0;
+                  // Then flush text tokens
+                  for (const text of pendingTokens) {
+                    if (streamFailed || !activeOutbound) break;
                     const sent = activeOutbound.streamToken(
                       msg.messageId,
-                      payload.text,
+                      text,
                     );
                     if (!sent) {
                       console.error(
@@ -254,6 +245,105 @@ const typePlugin = {
                       );
                       streamFailed = true;
                     }
+                  }
+                  pendingTokens.length = 0;
+                },
+                reject: (err: Error) => {
+                  if (ackTimeoutId) {
+                    clearTimeout(ackTimeoutId);
+                    ackTimeoutId = null;
+                  }
+                  console.error(
+                    `[type] stream_start rejected: ${err.message}`,
+                  );
+                  streamFailed = true;
+                  pendingTokens.length = 0;
+                  pendingToolEvents.length = 0;
+                },
+              };
+              // Timeout after 5s in case server never responds
+              ackTimeoutId = setTimeout(() => {
+                ackTimeoutId = null;
+                if (pendingStreamStart) {
+                  pendingStreamStart.reject(
+                    new Error("stream_start ack timeout"),
+                  );
+                  pendingStreamStart = null;
+                }
+              }, 5000);
+            };
+
+            // Dispatch with onPartialReply for token-level streaming.
+            // onPartialReply fires with accumulated text as the model
+            // generates; we compute the delta and send/buffer it.
+            void runtime.channel.reply
+              .dispatchReplyWithBufferedBlockDispatcher({
+                ctx: ctxPayload,
+                cfg: ctx.cfg,
+                dispatcherOptions: {
+                  deliver: async (
+                    payload: { text?: string; mediaUrls?: string[] },
+                    info: { kind: string },
+                  ) => {
+                    // Handle tool results as native tool-call + tool-result
+                    // stream events so they render as collapsible cards in
+                    // Type's UI (matching how internal agents show tools).
+                    if (info.kind === "tool" && payload.text) {
+                      if (!activeOutbound || streamFailed) return;
+
+                      // Start stream if not started
+                      if (!streamStarted) {
+                        startStreamAndFlush();
+                      }
+                      if (streamFailed) return;
+
+                      // Parse tool name from the formatted text.
+                      // Format is typically: "📚 Read: /path/to/file" or
+                      // "🧪 Exec: command here\noutput..."
+                      const toolCallId = `tool_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+                      const textContent = payload.text.trim();
+                      // Strip leading emoji (1-2 chars + space)
+                      const stripped = textContent.replace(/^[\p{Emoji}\uFE0F\u200D]+\s*/u, "");
+                      // Tool name is everything before the first ":"
+                      const colonIdx = stripped.indexOf(":");
+                      const toolName = colonIdx > 0
+                        ? stripped.slice(0, colonIdx).trim()
+                        : "tool";
+                      const toolOutput = colonIdx > 0
+                        ? stripped.slice(colonIdx + 1).trim()
+                        : stripped;
+
+                      const sendToolEvent = (event: {
+                        kind: string;
+                        [key: string]: unknown;
+                      }) => {
+                        if (streamReady) {
+                          activeOutbound.streamEvent(msg.messageId, event);
+                        } else {
+                          // Buffer as a special marker for flush
+                          pendingToolEvents.push(event);
+                        }
+                      };
+
+                      // Send tool-call (running) then tool-result (completed)
+                      // back-to-back. Server processes sequentially so the
+                      // status transitions running → completed immediately.
+                      sendToolEvent({
+                        kind: "tool-call",
+                        toolCallId,
+                        toolName,
+                        input: toolOutput
+                          ? { command: toolOutput.split("\n")[0] }
+                          : {},
+                      });
+                      sendToolEvent({
+                        kind: "tool-result",
+                        toolCallId,
+                        toolName,
+                        outcomes: [{ kind: "text", toolName, text: toolOutput }],
+                      });
+                    }
+                    // Other kinds (block, final) are no-op - onPartialReply handles text streaming
                   },
                   onSkip: (_payload, info) => {
                     console.log(
@@ -268,6 +358,39 @@ const typePlugin = {
                 },
                 replyOptions: {
                   disableBlockStreaming: false,
+                  onPartialReply: (payload: { text?: string }) => {
+                    if (!payload.text || !activeOutbound || streamFailed)
+                      return;
+                    const delta = payload.text.slice(lastSentLength);
+                    if (delta.length === 0) return;
+                    lastSentLength = payload.text.length;
+
+                    // First activity: kick off stream_start
+                    if (!streamStarted) {
+                      startStreamAndFlush();
+                    }
+
+                    if (streamFailed) return;
+
+                    if (streamReady) {
+                      // Ack already received — send directly
+                      const sent = activeOutbound.streamToken(
+                        msg.messageId,
+                        delta,
+                      );
+                      if (!sent) {
+                        console.error(
+                          "[type] streamToken send failed (connection not open)",
+                        );
+                        streamFailed = true;
+                      }
+                    } else {
+                      // Still waiting for ack — buffer
+                      pendingTokens.push(delta);
+                    }
+                  },
+                  // Note: onToolResult is overwritten by dispatch-from-config.js,
+                  // so tool results come through the deliver callback instead.
                 },
               })
               .then(() => {

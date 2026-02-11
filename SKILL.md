@@ -146,6 +146,11 @@ The plugin logs these and stops streaming on `stream_start` failure.
 
 ## Troubleshooting
 
+### Text renders with unwanted paragraph breaks
+
+- Set `breakPreference: "sentence"` in your OpenClaw `blockStreamingChunk` config. The default chunker inserts `\n\n` at line-width boundaries, which Type renders as paragraph breaks in markdown. The `"sentence"` mode uses spaces as joiners instead.
+- Type accumulates all stream tokens into a single string (`accumulatedText += chunk`) with no separators — newlines in chunks are preserved as-is and affect markdown rendering.
+
 ### Response arrives all at once
 
 - Ensure `blockStreaming: true` is set in the channel config (`~/.openclaw/openclaw.json`)
