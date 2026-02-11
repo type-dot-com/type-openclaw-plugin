@@ -282,8 +282,8 @@ const typePlugin = {
                 cfg: ctx.cfg,
                 dispatcherOptions: {
                   deliver: async (
-                    payload: { text?: string; mediaUrls?: string[] },
-                    info: { kind: string },
+                    payload: { text?: string },
+                    info: Record<string, unknown>,
                   ) => {
                     // Handle tool results as native tool-call + tool-result
                     // stream events so they render as collapsible cards in
@@ -317,7 +317,7 @@ const typePlugin = {
                         kind: string;
                         [key: string]: unknown;
                       }) => {
-                        if (streamReady) {
+                        if (streamReady && activeOutbound) {
                           activeOutbound.streamEvent(msg.messageId, event);
                         } else {
                           // Buffer as a special marker for flush
