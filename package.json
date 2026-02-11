@@ -1,0 +1,29 @@
+{
+  "name": "@openclaw/type",
+  "version": "0.1.0",
+  "description": "OpenClaw channel plugin for Type team chat integration via WebSocket",
+  "type": "module",
+  "main": "src/index.ts",
+  "openclaw": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "channel": {
+      "id": "type",
+      "label": "Type",
+      "selectionLabel": "Type (Team Chat)",
+      "docsPath": "/channels/type",
+      "blurb": "Connect OpenClaw to Type team chat via WebSocket."
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ws": "^8.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "@types/ws": "^8.5.0"
+  }
+}
