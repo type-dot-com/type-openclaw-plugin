@@ -253,9 +253,7 @@ const typePlugin = {
                     clearTimeout(ackTimeoutId);
                     ackTimeoutId = null;
                   }
-                  console.error(
-                    `[type] stream_start rejected: ${err.message}`,
-                  );
+                  console.error(`[type] stream_start rejected: ${err.message}`);
                   streamFailed = true;
                   pendingTokens.length = 0;
                   pendingToolEvents.length = 0;
@@ -303,15 +301,20 @@ const typePlugin = {
                       const toolCallId = `tool_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
                       const textContent = payload.text.trim();
                       // Strip leading emoji (1-2 chars + space)
-                      const stripped = textContent.replace(/^[\p{Emoji}\uFE0F\u200D]+\s*/u, "");
+                      const stripped = textContent.replace(
+                        /^(?:\p{Emoji}|\uFE0F|\u200D)+\s*/u,
+                        "",
+                      );
                       // Tool name is everything before the first ":"
                       const colonIdx = stripped.indexOf(":");
-                      const toolName = colonIdx > 0
-                        ? stripped.slice(0, colonIdx).trim()
-                        : "tool";
-                      const toolOutput = colonIdx > 0
-                        ? stripped.slice(colonIdx + 1).trim()
-                        : stripped;
+                      const toolName =
+                        colonIdx > 0
+                          ? stripped.slice(0, colonIdx).trim()
+                          : "tool";
+                      const toolOutput =
+                        colonIdx > 0
+                          ? stripped.slice(colonIdx + 1).trim()
+                          : stripped;
 
                       const sendToolEvent = (event: {
                         kind: string;
@@ -340,7 +343,9 @@ const typePlugin = {
                         kind: "tool-result",
                         toolCallId,
                         toolName,
-                        outcomes: [{ kind: "text", toolName, text: toolOutput }],
+                        outcomes: [
+                          { kind: "text", toolName, text: toolOutput },
+                        ],
                       });
                     }
                     // Other kinds (block, final) are no-op - onPartialReply handles text streaming
