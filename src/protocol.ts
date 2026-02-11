@@ -5,48 +5,59 @@
  * between the OpenClaw plugin and the Type server.
  */
 
+import { z } from "zod";
+
 // ---------------------------------------------------------------------------
-// Inbound: Type Server -> Plugin
+// Inbound: Type Server -> Plugin (Zod schemas + inferred types)
 // ---------------------------------------------------------------------------
 
-export interface TypeMessageEvent {
-  type: "message";
-  messageId: string;
-  channelId: string;
-  channelName: string | null;
-  parentMessageId: string | null;
-  sender: {
-    id: string;
-    name: string;
-  } | null;
-  content: string | null;
-  mentionsAgent: boolean;
-  timestamp: number;
-}
+const typeMessageEventSchema = z.object({
+  type: z.literal("message"),
+  messageId: z.string(),
+  channelId: z.string(),
+  channelName: z.string().nullable(),
+  parentMessageId: z.string().nullable(),
+  sender: z
+    .object({
+      id: z.string(),
+      name: z.string(),
+    })
+    .nullable(),
+  content: z.string().nullable(),
+  mentionsAgent: z.boolean(),
+  timestamp: z.number(),
+});
 
-export interface TypePingEvent {
-  type: "ping";
-  timestamp: number;
-}
+const typePingEventSchema = z.object({
+  type: z.literal("ping"),
+  timestamp: z.number(),
+});
 
-export interface TypeSuccessEvent {
-  type: "success";
-  requestType: string;
-  messageId?: string;
-}
+const typeSuccessEventSchema = z.object({
+  type: z.literal("success"),
+  requestType: z.string(),
+  messageId: z.string().optional(),
+});
 
-export interface TypeErrorEvent {
-  type: "error";
-  requestType: string;
-  error: string;
-  details?: unknown;
-}
+const typeErrorEventSchema = z.object({
+  type: z.literal("error"),
+  requestType: z.string(),
+  error: z.string(),
+  details: z.unknown().optional(),
+});
 
-export type TypeInboundEvent =
-  | TypeMessageEvent
-  | TypePingEvent
-  | TypeSuccessEvent
-  | TypeErrorEvent;
+export const typeInboundEventSchema = z.discriminatedUnion("type", [
+  typeMessageEventSchema,
+  typePingEventSchema,
+  typeSuccessEventSchema,
+  typeErrorEventSchema,
+]);
+
+export type TypeMessageEvent = z.infer<typeof typeMessageEventSchema>;
+export type TypePingEvent = z.infer<typeof typePingEventSchema>;
+export type TypeSuccessEvent = z.infer<typeof typeSuccessEventSchema>;
+export type TypeErrorEvent = z.infer<typeof typeErrorEventSchema>;
+export type TypeInboundEvent = z.infer<typeof typeInboundEventSchema>;
 
 // ---------------------------------------------------------------------------
 // Outbound: Plugin -> Type Server

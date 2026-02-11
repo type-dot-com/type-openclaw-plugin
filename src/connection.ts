@@ -2,14 +2,18 @@
  * WebSocket Connection Manager
  *
  * Manages the WebSocket connection to the Type server. Handles:
- * - Authentication via token in query string
+ * - Authentication via Authorization header
  * - Automatic reconnection with exponential backoff + jitter
  * - Ping/pong keepalive
  * - Message sending and receiving
  */
 
 import WebSocket from "ws";
-import type { TypeInboundEvent, TypeOutboundMessage } from "./protocol.js";
+import {
+  type TypeInboundEvent,
+  type TypeOutboundMessage,
+  typeInboundEventSchema,
+} from "./protocol.js";
 
 const BASE_RECONNECT_DELAY_MS = 1000;
 const MAX_RECONNECT_DELAY_MS = 60000;
@@ -102,15 +106,21 @@ export class TypeConnection {
   }
 
   private handleMessage(raw: string): void {
-    let msg: Record<string, unknown>;
+    let json: unknown;
     try {
-      msg = JSON.parse(raw) as Record<string, unknown>;
+      json = JSON.parse(raw);
     } catch {
       console.error("[Type WS] Failed to parse message:", raw);
       return;
     }
 
-    if (typeof msg.type !== "string") return;
+    const parsed = typeInboundEventSchema.safeParse(json);
+    if (!parsed.success) {
+      console.error("[Type WS] Unknown message shape:", raw);
+      return;
+    }
+
+    const msg = parsed.data;
 
     // Handle ping internally
     if (msg.type === "ping") {
@@ -119,7 +129,7 @@ export class TypeConnection {
     }
 
     // Forward all other events to the callback
-    this.config.onMessage(msg as unknown as TypeInboundEvent);
+    this.config.onMessage(msg);
   }
 
   private scheduleReconnect(): void {

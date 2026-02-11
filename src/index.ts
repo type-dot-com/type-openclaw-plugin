@@ -56,7 +56,7 @@ const typePlugin = {
   },
 
   capabilities: {
-    chatTypes: ["direct", "channel", "thread"] as const,
+    chatTypes: ["direct", "channel", "thread"] satisfies readonly string[],
     media: false,
     reactions: false,
     threads: true,
@@ -69,7 +69,7 @@ const typePlugin = {
   },
 
   outbound: {
-    deliveryMode: "direct" as const,
+    deliveryMode: "direct" satisfies string,
     textChunkLimit: 4000,
 
     sendText: async ({
@@ -478,7 +478,7 @@ const plugin = {
 
 export default plugin;
 
-export type { TypeAccountConfig, TypeChannelConfig } from "./config.js";
+export type { TypeAccountConfig } from "./config.js";
 // Re-export components for advanced usage
 export { TypeConnection } from "./connection.js";
 export { TypeOutboundHandler } from "./outbound.js";
