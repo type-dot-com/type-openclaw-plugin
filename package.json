@@ -16,6 +16,12 @@
       "blurb": "Connect OpenClaw to Type team chat via WebSocket."
     }
   },
+  "files": [
+    "src/**/*.ts",
+    "!src/**/*.test.ts",
+    "openclaw.plugin.json",
+    "SKILL.md"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit"
   },

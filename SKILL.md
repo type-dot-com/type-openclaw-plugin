@@ -17,7 +17,7 @@ Connect OpenClaw agents to Type team chat via a duplex WebSocket.
     "type": {
       "enabled": true,
       "token": "ta_your_agent_token",
-      "wsUrl": "ws://your-type-server:3000/api/agents/ws",
+      "wsUrl": "wss://your-type-server/api/agents/ws",
       "agentId": "agent_..."
     }
   }
@@ -81,33 +81,6 @@ dispatch complete     -> send stream_finish
 ```
 
 The plugin sets `disableBlockStreaming: true` in `replyOptions` and uses `onPartialReply` for text streaming. Tool outputs arrive via the `deliver` callback (with `info.kind === "tool"`) and are forwarded as `tool-call` + `tool-result` stream events.
-
-## Server-Side Behavior
-
-### Stream State Management
-
-- **Idle timeout**: 30 seconds of no `stream_event` -> stream is cancelled, message marked as error
-- **Agent timeout**: Configurable per-agent (default 120s) -> if no response at all after trigger
-- **Max active streams**: 1000 concurrent
-- **Update throttle**: 100ms between real-time publishes to clients
-
-### Connection Replacement
-
-When the agent reconnects, the server:
-- Keeps the old socket alive (doesn't force-close it)
-- Aborts the old socket's trigger subscription and ping interval
-- Only fails streams when the **active** connection closes (stale socket close is safe)
-
-### Error Responses
-
-The server sends typed error responses for all operations:
-
-```json
-{ "type": "error", "requestType": "stream_start", "error": "Agent run not found" }
-{ "type": "error", "requestType": "stream_event", "error": "No active stream for this message" }
-```
-
-The plugin logs these and stops streaming on `stream_start` failure (5s ack timeout).
 
 ## WebSocket Message Reference
 
