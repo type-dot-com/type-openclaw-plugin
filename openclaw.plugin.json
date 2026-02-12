@@ -1,0 +1,16 @@
+{
+  "id": "type",
+  "name": "Type",
+  "description": "Type team chat integration",
+  "channels": ["type"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean" },
+      "token": { "type": "string" },
+      "wsUrl": { "type": "string" },
+      "agentId": { "type": "string" }
+    }
+  }
+}
