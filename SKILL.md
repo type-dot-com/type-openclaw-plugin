@@ -8,6 +8,11 @@ Connect OpenClaw agents to Type team chat via a duplex WebSocket.
 
 ```json
 {
+  "agents": {
+    "defaults": {
+      "verboseDefault": "on"
+    }
+  },
   "channels": {
     "type": {
       "enabled": true,
@@ -19,6 +24,8 @@ Connect OpenClaw agents to Type team chat via a duplex WebSocket.
   }
 }
 ```
+
+**`agents.defaults.verboseDefault`** must be set to `"on"`. This enables `onToolResult` callbacks so tool outputs can be streamed to Type.
 
 | Field | Required | Description |
 |-------|----------|-------------|
@@ -75,16 +82,15 @@ deliver(block3) -> send stream_event(block3)
 dispatch complete -> send stream_finish
 ```
 
-### Block Streaming vs Token Streaming
+### Streaming via `onPartialReply`
 
-OpenClaw does **not** support true token-by-token streaming to external channels (`onPartialReply` is Telegram-only). The Type plugin uses **block streaming**:
+The plugin sets `disableBlockStreaming: true` in `replyOptions` and uses the `onPartialReply` callback instead. Combined with `verboseDefault: "on"` at the global agent level, this enables `onToolResult` callbacks so tool outputs are streamed alongside text deltas.
 
-- Set `blockStreaming: true` in the channel config
-- Set `disableBlockStreaming: false` in replyOptions
-- `deliver` fires per completed text block (paragraphs/sections), not per token
-- Each block is sent as a `stream_event` with `kind: "token"`
+- Set `blockStreaming: true` in the channel config (enables the deliver pipeline)
+- Set `disableBlockStreaming: true` in replyOptions (routes through `onPartialReply` instead of block deliver)
+- Each partial reply is sent as a `stream_event` with `kind: "token"`
 
-For short responses, `deliver` may fire only once with the full text.
+For short responses, `onPartialReply` may fire only once with the full text.
 
 ## Server-Side Behavior
 
