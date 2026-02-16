@@ -38,6 +38,63 @@ describe("typeInboundEventSchema", () => {
       expect(result.success).toBe(true);
     });
 
+    it("parses a message event with rich trigger context", () => {
+      const result = typeInboundEventSchema.safeParse({
+        type: "message",
+        messageId: "msg_abc123",
+        channelId: "ch_456",
+        channelName: "general",
+        parentMessageId: "msg_parent",
+        sender: { id: "user_1", name: "Alice" },
+        content: "Please summarize this thread",
+        mentionsAgent: true,
+        timestamp: Date.now(),
+        context: {
+          triggeringUser: {
+            id: "user_1",
+            name: "Alice",
+            email: "alice@example.com",
+          },
+          channel: {
+            id: "ch_456",
+            name: "general",
+            description: "General chat",
+            visibility: "public",
+            members: [
+              {
+                id: "user_1",
+                name: "Alice",
+                email: "alice@example.com",
+                role: "owner",
+                avatarUrl: null,
+              },
+            ],
+          },
+          thread: {
+            parentMessageId: "msg_parent",
+            threadTitle: "Incident follow-up",
+            messages: [
+              {
+                messageId: "msg_parent",
+                role: "user",
+                content: "What happened?",
+                timestamp: Date.now(),
+                parentMessageId: null,
+                sender: {
+                  id: "user_1",
+                  name: "Alice",
+                  email: "alice@example.com",
+                },
+              },
+            ],
+          },
+          recentMessages: null,
+        },
+      });
+
+      expect(result.success).toBe(true);
+    });
+
     it("rejects a message event missing required fields", () => {
       const result = typeInboundEventSchema.safeParse({
         type: "message",

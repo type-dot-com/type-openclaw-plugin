@@ -20,7 +20,10 @@ function getMessageIdFromContext(ctx: Record<string, unknown>): string | null {
   return typeof value === "string" ? value : null;
 }
 
-function createMessage(messageId: string): TypeMessageEvent {
+function createMessage(
+  messageId: string,
+  overrides: Partial<TypeMessageEvent> = {},
+): TypeMessageEvent {
   return {
     type: "message",
     messageId,
@@ -31,6 +34,7 @@ function createMessage(messageId: string): TypeMessageEvent {
     content: "hello",
     mentionsAgent: true,
     timestamp: Date.now(),
+    ...overrides,
   };
 }
 
@@ -112,6 +116,10 @@ describe("messageHandler stream ack routing", () => {
     expect(started).toEqual(["msg_1", "msg_2"]);
     expect(tokenChunksByMessage.size).toBe(0);
 
+    resolveStreamAck("msg_unknown");
+    expect(tokenChunksByMessage.get("msg_1")).toBeUndefined();
+    expect(tokenChunksByMessage.get("msg_2")).toBeUndefined();
+
     resolveStreamAck("msg_2");
     expect(tokenChunksByMessage.get("msg_1")).toBeUndefined();
     expect(tokenChunksByMessage.get("msg_2")).toEqual(["Second reply"]);
@@ -125,5 +133,221 @@ describe("messageHandler stream ack routing", () => {
     await Promise.resolve();
 
     expect(finished.sort()).toEqual(["msg_1", "msg_2"]);
+  });
+
+  test("flushes and finishes when ack arrives after dispatch has already completed", async () => {
+    const calls: Array<{ kind: "start" | "token" | "finish"; value: string }> =
+      [];
+
+    const outbound: StreamOutbound = {
+      startStream(messageId: string): boolean {
+        calls.push({ kind: "start", value: messageId });
+        return true;
+      },
+      streamToken(messageId: string, text: string): boolean {
+        calls.push({ kind: "token", value: `${messageId}:${text}` });
+        return true;
+      },
+      streamEvent(): boolean {
+        return true;
+      },
+      finishStream(messageId: string): boolean {
+        calls.push({ kind: "finish", value: messageId });
+        return true;
+      },
+    };
+
+    const runtime: PluginRuntime = {
+      channel: {
+        reply: {
+          finalizeInboundContext(
+            ctx: Record<string, unknown>,
+          ): Record<string, unknown> {
+            return ctx;
+          },
+          dispatchReplyWithBufferedBlockDispatcher(opts): Promise<void> {
+            if (hasOnPartialReply(opts.replyOptions)) {
+              opts.replyOptions.onPartialReply({ text: "Late ack reply" });
+            }
+            return Promise.resolve();
+          },
+        },
+      },
+    };
+
+    handleInboundMessage({
+      msg: createMessage("msg_late_ack"),
+      accountId: "acct_1",
+      cfg: {},
+      runtime,
+      outbound,
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(calls).toEqual([{ kind: "start", value: "msg_late_ack" }]);
+
+    resolveStreamAck("msg_late_ack");
+
+    expect(calls).toEqual([
+      { kind: "start", value: "msg_late_ack" },
+      { kind: "token", value: "msg_late_ack:Late ack reply" },
+      { kind: "finish", value: "msg_late_ack" },
+    ]);
+  });
+
+  test("keeps message body clean and forwards rich trigger context as structured fields", async () => {
+    let capturedContext: Record<string, unknown> | null = null;
+
+    const outbound: StreamOutbound = {
+      startStream(): boolean {
+        return true;
+      },
+      streamToken(): boolean {
+        return true;
+      },
+      streamEvent(): boolean {
+        return true;
+      },
+      finishStream(): boolean {
+        return true;
+      },
+    };
+
+    const runtime: PluginRuntime = {
+      channel: {
+        reply: {
+          finalizeInboundContext(
+            ctx: Record<string, unknown>,
+          ): Record<string, unknown> {
+            capturedContext = ctx;
+            return ctx;
+          },
+          dispatchReplyWithBufferedBlockDispatcher(): Promise<void> {
+            return Promise.resolve();
+          },
+        },
+      },
+    };
+
+    const message = createMessage("msg_ctx", {
+      content: "Please summarize this thread.",
+      parentMessageId: "msg_parent",
+      context: {
+        triggeringUser: {
+          id: "user_1",
+          name: "Alice",
+          email: "alice@example.com",
+        },
+        channel: {
+          id: "ch_1",
+          name: "general",
+          description: "Team chat",
+          visibility: "public",
+          members: [
+            {
+              id: "user_1",
+              name: "Alice",
+              email: "alice@example.com",
+              role: "owner",
+              avatarUrl: null,
+            },
+          ],
+        },
+        thread: {
+          parentMessageId: "msg_parent",
+          threadTitle: "Incident follow-up",
+          messages: [
+            {
+              messageId: "msg_old_1",
+              role: "user",
+              content: "What happened?",
+              timestamp: 1700000000000,
+              parentMessageId: null,
+              sender: {
+                id: "user_1",
+                name: "Alice",
+                email: "alice@example.com",
+              },
+            },
+            {
+              messageId: "msg_old_2",
+              role: "assistant",
+              content: "A deployment failed.",
+              timestamp: 1700000001000,
+              parentMessageId: "msg_parent",
+              sender: null,
+            },
+          ],
+        },
+        recentMessages: null,
+      },
+    });
+
+    handleInboundMessage({
+      msg: message,
+      accountId: "acct_1",
+      cfg: {},
+      runtime,
+      outbound,
+    });
+
+    expect(capturedContext).not.toBeNull();
+    if (!capturedContext) {
+      throw new Error("Expected captured context");
+    }
+
+    expect(capturedContext.Body).toBe("Please summarize this thread.");
+    expect(capturedContext.RawBody).toBe("Please summarize this thread.");
+    expect(capturedContext.CommandBody).toBe("Please summarize this thread.");
+    expect(capturedContext.BodyForAgent).toBe("Please summarize this thread.");
+    expect(capturedContext.BodyForCommands).toBe(
+      "Please summarize this thread.",
+    );
+
+    const inboundHistoryValue = capturedContext.InboundHistory;
+    expect(Array.isArray(inboundHistoryValue)).toBe(true);
+    if (!Array.isArray(inboundHistoryValue)) {
+      throw new Error("Expected inbound history array");
+    }
+    expect(inboundHistoryValue).toHaveLength(2);
+    const firstEntry = inboundHistoryValue[0];
+    const secondEntry = inboundHistoryValue[1];
+    expect(typeof firstEntry).toBe("object");
+    expect(typeof secondEntry).toBe("object");
+    if (
+      !firstEntry ||
+      typeof firstEntry !== "object" ||
+      !secondEntry ||
+      typeof secondEntry !== "object"
+    ) {
+      throw new Error("Expected history entries to be objects");
+    }
+    expect(firstEntry).toMatchObject({
+      sender: "Alice",
+      body: "What happened?",
+      timestamp: 1700000000000,
+    });
+    expect(secondEntry).toMatchObject({
+      sender: "Assistant",
+      body: "A deployment failed.",
+      timestamp: 1700000001000,
+    });
+
+    const untrustedContextValue = capturedContext.UntrustedContext;
+    expect(Array.isArray(untrustedContextValue)).toBe(true);
+    if (!Array.isArray(untrustedContextValue)) {
+      throw new Error("Expected untrusted context array");
+    }
+    expect(untrustedContextValue.length).toBeGreaterThan(0);
+    expect(untrustedContextValue.join("\n")).toContain(
+      "Channel metadata (untrusted):",
+    );
+    expect(untrustedContextValue.join("\n")).toContain(
+      "Thread metadata (untrusted):",
+    );
+
+    expect(capturedContext.TypeTriggerContext).toEqual(message.context);
   });
 });

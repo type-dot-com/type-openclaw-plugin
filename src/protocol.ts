@@ -11,6 +11,50 @@ import { z } from "zod";
 // Inbound: Type Server -> Plugin (Zod schemas + inferred types)
 // ---------------------------------------------------------------------------
 
+const typeTriggerUserSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  email: z.string().nullable(),
+});
+
+const typeChannelMemberSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  email: z.string(),
+  role: z.enum(["owner", "admin", "member", "viewer"]),
+  avatarUrl: z.string().nullable(),
+});
+
+const typeChannelContextSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  visibility: z.enum(["public", "private"]),
+  members: z.array(typeChannelMemberSchema),
+});
+
+const typeHistoryMessageSchema = z.object({
+  messageId: z.string().nullable(),
+  role: z.enum(["user", "assistant"]),
+  content: z.string(),
+  timestamp: z.number().nullable(),
+  parentMessageId: z.string().nullable(),
+  sender: typeTriggerUserSchema.nullable(),
+});
+
+const typeThreadContextSchema = z.object({
+  parentMessageId: z.string(),
+  threadTitle: z.string().nullable(),
+  messages: z.array(typeHistoryMessageSchema),
+});
+
+const typeTriggerContextSchema = z.object({
+  triggeringUser: typeTriggerUserSchema.nullable(),
+  channel: typeChannelContextSchema.nullable(),
+  thread: typeThreadContextSchema.nullable(),
+  recentMessages: z.array(typeHistoryMessageSchema).nullable(),
+});
+
 const typeMessageEventSchema = z.object({
   type: z.literal("message"),
   messageId: z.string(),
@@ -26,6 +70,7 @@ const typeMessageEventSchema = z.object({
   content: z.string().nullable(),
   mentionsAgent: z.boolean(),
   timestamp: z.number(),
+  context: typeTriggerContextSchema.nullable().optional(),
 });
 
 const typePingEventSchema = z.object({
