@@ -6,9 +6,8 @@
  * the standard OpenClaw agent reply pipeline.
  */
 
-import type { TypeOutboundHandler } from "./outbound.js";
 import type { TypeMessageEvent } from "./protocol.js";
-import { StreamSession } from "./streamSession.js";
+import { type StreamOutbound, StreamSession } from "./streamSession.js";
 import { createToolEvents } from "./toolEvents.js";
 
 /**
@@ -42,23 +41,85 @@ export interface Logger {
   error: (msg: string) => void;
 }
 
-// Active stream session — one at a time per connection.
-// Exposed via resolveStreamAck / rejectStreamAck for the server
-// response handler in index.ts to call.
-let activeStreamSession: StreamSession | null = null;
+const sessionsByMessageId = new Map<string, StreamSession>();
+const pendingAckOrder: string[] = [];
 
-/**
- * Resolve the pending stream_start ack on the active session.
- */
-export function resolveStreamAck(): void {
-  activeStreamSession?.onAck();
+function trackSession(messageId: string, session: StreamSession): void {
+  const existing = sessionsByMessageId.get(messageId);
+  if (existing) {
+    untrackSession(messageId);
+  }
+  sessionsByMessageId.set(messageId, session);
+}
+
+function untrackSession(messageId: string): void {
+  sessionsByMessageId.delete(messageId);
+  const idx = pendingAckOrder.indexOf(messageId);
+  if (idx >= 0) {
+    pendingAckOrder.splice(idx, 1);
+  }
+}
+
+function markSessionAwaitingAck(messageId: string): void {
+  if (!pendingAckOrder.includes(messageId)) {
+    pendingAckOrder.push(messageId);
+  }
+}
+
+function resolveSessionForAck(messageId?: string): StreamSession | null {
+  if (messageId) {
+    const byId = sessionsByMessageId.get(messageId);
+    if (byId?.isAwaitingAck) {
+      return byId;
+    }
+  }
+
+  while (pendingAckOrder.length > 0) {
+    const nextMessageId = pendingAckOrder[0];
+    const session = sessionsByMessageId.get(nextMessageId);
+    if (session?.isAwaitingAck) {
+      return session;
+    }
+    pendingAckOrder.shift();
+  }
+
+  return null;
 }
 
 /**
- * Reject the pending stream_start ack on the active session.
+ * Resolve the pending stream_start ack on a specific session.
+ * Falls back to the oldest pending session when messageId is missing.
  */
-export function rejectStreamAck(error: Error): void {
-  activeStreamSession?.onAckError(error);
+export function resolveStreamAck(messageId?: string): void {
+  const session = resolveSessionForAck(messageId);
+  if (!session) return;
+  session.onAck();
+  if (messageId) {
+    const idx = pendingAckOrder.indexOf(messageId);
+    if (idx >= 0) {
+      pendingAckOrder.splice(idx, 1);
+    }
+    return;
+  }
+  pendingAckOrder.shift();
+}
+
+/**
+ * Reject the pending stream_start ack on a specific session.
+ * Falls back to the oldest pending session when messageId is missing.
+ */
+export function rejectStreamAck(error: Error, messageId?: string): void {
+  const session = resolveSessionForAck(messageId);
+  if (!session) return;
+  session.onAckError(error);
+  if (messageId) {
+    const idx = pendingAckOrder.indexOf(messageId);
+    if (idx >= 0) {
+      pendingAckOrder.splice(idx, 1);
+    }
+    return;
+  }
+  pendingAckOrder.shift();
 }
 
 /**
@@ -69,7 +130,7 @@ export function handleInboundMessage(params: {
   accountId: string;
   cfg: Record<string, unknown>;
   runtime: PluginRuntime;
-  outbound: TypeOutboundHandler;
+  outbound: StreamOutbound;
   log?: Logger;
 }): void {
   const { msg, accountId, cfg, runtime, outbound, log } = params;
@@ -106,7 +167,7 @@ export function handleInboundMessage(params: {
     });
 
     const session = new StreamSession(outbound, msg.messageId);
-    activeStreamSession = session;
+    trackSession(msg.messageId, session);
 
     void runtime.channel.reply
       .dispatchReplyWithBufferedBlockDispatcher({
@@ -124,6 +185,9 @@ export function handleInboundMessage(params: {
               const [toolCall, toolResult] = createToolEvents(payload.text);
               session.sendToolEvent(toolCall);
               session.sendToolEvent(toolResult);
+              if (session.isStarted) {
+                markSessionAwaitingAck(msg.messageId);
+              }
             }
             // Other kinds (block, final) are no-op — onPartialReply handles text
           },
@@ -139,6 +203,9 @@ export function handleInboundMessage(params: {
           onPartialReply: (payload: { text?: string }) => {
             if (!payload.text || session.isFailed) return;
             session.sendToken(payload.text);
+            if (session.isStarted) {
+              markSessionAwaitingAck(msg.messageId);
+            }
           },
         },
       })
@@ -146,7 +213,7 @@ export function handleInboundMessage(params: {
         if (session.isStarted) {
           session.finish();
         }
-        activeStreamSession = null;
+        untrackSession(msg.messageId);
       })
       .catch((err: unknown) => {
         console.error(
@@ -155,7 +222,7 @@ export function handleInboundMessage(params: {
         if (session.isStarted) {
           session.finish();
         }
-        activeStreamSession = null;
+        untrackSession(msg.messageId);
       });
   } catch (err) {
     log?.error(

@@ -43,6 +43,7 @@ const typeErrorEventSchema = z.object({
   type: z.literal("error"),
   requestType: z.string(),
   error: z.string(),
+  messageId: z.string().optional(),
   details: z.unknown().optional(),
 });
 

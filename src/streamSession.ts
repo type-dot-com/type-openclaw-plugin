@@ -5,18 +5,29 @@
  * stream_start, ack gating, token/event buffering, and finish.
  */
 
-import type { TypeOutboundHandler } from "./outbound.js";
 import type { ToolEventPayload } from "./toolEvents.js";
 
 const ACK_TIMEOUT_MS = 5000;
 
+export interface StreamOutbound {
+  startStream: (messageId: string) => boolean;
+  streamToken: (messageId: string, text: string) => boolean;
+  streamEvent: (
+    messageId: string,
+    event: { kind: string; [key: string]: unknown },
+  ) => boolean;
+  finishStream: (messageId: string) => boolean;
+}
+
 export class StreamSession {
-  readonly #outbound: TypeOutboundHandler;
+  readonly #outbound: StreamOutbound;
   readonly #messageId: string;
 
   #failed = false;
   #started = false;
   #ready = false;
+  #finishRequested = false;
+  #finishSent = false;
   #lastSentLength = 0;
 
   #pendingTokens: string[] = [];
@@ -25,7 +36,7 @@ export class StreamSession {
     null;
   #ackTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(outbound: TypeOutboundHandler, messageId: string) {
+  constructor(outbound: StreamOutbound, messageId: string) {
     this.#outbound = outbound;
     this.#messageId = messageId;
   }
@@ -36,6 +47,10 @@ export class StreamSession {
 
   get isStarted(): boolean {
     return this.#started;
+  }
+
+  get isAwaitingAck(): boolean {
+    return this.#pendingAck !== null;
   }
 
   /**
@@ -59,11 +74,15 @@ export class StreamSession {
         this.#clearAckTimeout();
         this.#ready = true;
         this.#flushBuffers();
+        if (this.#finishRequested && !this.#finishSent) {
+          this.#sendFinish();
+        }
       },
       reject: (err: Error) => {
         this.#clearAckTimeout();
         console.error(`[type] stream_start rejected: ${err.message}`);
         this.#failed = true;
+        this.#finishRequested = false;
         this.#pendingTokens.length = 0;
         this.#pendingToolEvents.length = 0;
       },
@@ -103,7 +122,7 @@ export class StreamSession {
    * buffering if the stream_start ack hasn't arrived yet.
    */
   sendToken(fullText: string): void {
-    if (this.#failed) return;
+    if (this.#failed || this.#finishSent) return;
 
     const delta = fullText.slice(this.#lastSentLength);
     if (delta.length === 0) return;
@@ -127,7 +146,7 @@ export class StreamSession {
    * Send a tool event (tool-call, tool-result, etc.), buffering if needed.
    */
   sendToolEvent(event: ToolEventPayload): void {
-    if (this.#failed) return;
+    if (this.#failed || this.#finishSent) return;
 
     this.ensureStarted();
     if (this.#failed) return;
@@ -143,13 +162,23 @@ export class StreamSession {
    * Finalize the stream. Call after dispatch completes (success or error).
    */
   finish(): void {
-    if (!this.#started) return;
+    if (!this.#started || this.#failed || this.#finishSent) return;
+    this.#finishRequested = true;
+
+    if (!this.#ready) return;
+
+    this.#sendFinish();
+  }
+
+  #sendFinish(): void {
     const finished = this.#outbound.finishStream(this.#messageId);
     if (!finished) {
       console.error(
         "[type] finishStream send failed (connection not open), stream will idle-timeout on server",
       );
     }
+    this.#finishSent = true;
+    this.#finishRequested = false;
   }
 
   #clearAckTimeout(): void {

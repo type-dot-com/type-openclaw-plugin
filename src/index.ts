@@ -102,7 +102,11 @@ const typePlugin = {
             const reqType = (event as { requestType?: string }).requestType;
             console.log(`[type] Server success: ${reqType}`);
             if (reqType === "stream_start") {
-              resolveStreamAck();
+              const messageId =
+                "messageId" in event && typeof event.messageId === "string"
+                  ? event.messageId
+                  : undefined;
+              resolveStreamAck(messageId);
             }
             return;
           }
@@ -111,13 +115,17 @@ const typePlugin = {
               requestType?: string;
               error?: string;
               details?: unknown;
+              messageId?: string;
             };
             console.error(
               `[type] Server error: ${errEvt.requestType} — ${errEvt.error}`,
               errEvt.details ?? "",
             );
             if (errEvt.requestType === "stream_start") {
-              rejectStreamAck(new Error(errEvt.error ?? "stream_start failed"));
+              rejectStreamAck(
+                new Error(errEvt.error ?? "stream_start failed"),
+                errEvt.messageId,
+              );
             }
             return;
           }
