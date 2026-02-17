@@ -213,7 +213,7 @@ function buildUntrustedContextBlocks(msg: TypeMessageEvent): string[] {
             name: context.channel.name,
             description: context.channel.description,
             visibility: context.channel.visibility,
-            members: context.channel.members.map((member) => ({
+            members: (context.channel.members ?? []).map((member) => ({
               id: member.id,
               name: member.name,
               email: member.email,
