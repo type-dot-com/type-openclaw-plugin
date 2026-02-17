@@ -295,7 +295,7 @@ describe("messageHandler stream ack routing", () => {
 
     expect(capturedContext).not.toBeNull();
     if (!capturedContext) {
-      throw new Error("Expected captured context");
+      return;
     }
 
     expect(capturedContext.Body).toBe("Please summarize this thread.");
@@ -309,11 +309,13 @@ describe("messageHandler stream ack routing", () => {
     const inboundHistoryValue = capturedContext.InboundHistory;
     expect(Array.isArray(inboundHistoryValue)).toBe(true);
     if (!Array.isArray(inboundHistoryValue)) {
-      throw new Error("Expected inbound history array");
+      return;
     }
     expect(inboundHistoryValue).toHaveLength(2);
     const firstEntry = inboundHistoryValue[0];
     const secondEntry = inboundHistoryValue[1];
+    expect(firstEntry).toBeTruthy();
+    expect(secondEntry).toBeTruthy();
     expect(typeof firstEntry).toBe("object");
     expect(typeof secondEntry).toBe("object");
     if (
@@ -322,7 +324,7 @@ describe("messageHandler stream ack routing", () => {
       !secondEntry ||
       typeof secondEntry !== "object"
     ) {
-      throw new Error("Expected history entries to be objects");
+      return;
     }
     expect(firstEntry).toMatchObject({
       sender: "Alice",
@@ -338,7 +340,7 @@ describe("messageHandler stream ack routing", () => {
     const untrustedContextValue = capturedContext.UntrustedContext;
     expect(Array.isArray(untrustedContextValue)).toBe(true);
     if (!Array.isArray(untrustedContextValue)) {
-      throw new Error("Expected untrusted context array");
+      return;
     }
     expect(untrustedContextValue.length).toBeGreaterThan(0);
     expect(untrustedContextValue.join("\n")).toContain(

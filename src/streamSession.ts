@@ -63,8 +63,10 @@ export class StreamSession {
 
     const sent = this.#outbound.startStream(this.#messageId);
     if (!sent) {
-      console.error("[type] startStream send failed (connection not open)");
-      this.#failed = true;
+      this.#markSendFailed({
+        kind: "stream_start",
+        message: "startStream send failed (connection not open)",
+      });
       return;
     }
     this.#started = true;
@@ -74,17 +76,16 @@ export class StreamSession {
         this.#clearAckTimeout();
         this.#ready = true;
         this.#flushBuffers();
-        if (this.#finishRequested && !this.#finishSent) {
+        if (this.#finishRequested && !this.#finishSent && !this.#failed) {
           this.#sendFinish();
         }
       },
       reject: (err: Error) => {
         this.#clearAckTimeout();
-        console.error(`[type] stream_start rejected: ${err.message}`);
-        this.#failed = true;
-        this.#finishRequested = false;
-        this.#pendingTokens.length = 0;
-        this.#pendingToolEvents.length = 0;
+        this.#markSendFailed({
+          kind: "stream_start",
+          message: `stream_start rejected: ${err.message}`,
+        });
       },
     };
 
@@ -134,8 +135,10 @@ export class StreamSession {
     if (this.#ready) {
       const sent = this.#outbound.streamToken(this.#messageId, delta);
       if (!sent) {
-        console.error("[type] streamToken send failed (connection not open)");
-        this.#failed = true;
+        this.#markSendFailed({
+          kind: "stream_token",
+          message: "streamToken send failed (connection not open)",
+        });
       }
     } else {
       this.#pendingTokens.push(delta);
@@ -152,7 +155,14 @@ export class StreamSession {
     if (this.#failed) return;
 
     if (this.#ready) {
-      this.#outbound.streamEvent(this.#messageId, event);
+      const sent = this.#outbound.streamEvent(this.#messageId, event);
+      if (!sent) {
+        this.#markSendFailed({
+          kind: "stream_event",
+          eventKind: event.kind,
+          message: "streamEvent send failed (connection not open)",
+        });
+      }
     } else {
       this.#pendingToolEvents.push(event);
     }
@@ -171,11 +181,18 @@ export class StreamSession {
   }
 
   #sendFinish(): void {
+    if (this.#failed) {
+      this.#finishRequested = false;
+      return;
+    }
     const finished = this.#outbound.finishStream(this.#messageId);
     if (!finished) {
-      console.error(
-        "[type] finishStream send failed (connection not open), stream will idle-timeout on server",
-      );
+      this.#markSendFailed({
+        kind: "stream_finish",
+        message:
+          "finishStream send failed (connection not open), stream will idle-timeout on server",
+      });
+      return;
     }
     this.#finishSent = true;
     this.#finishRequested = false;
@@ -192,7 +209,15 @@ export class StreamSession {
     // Flush tool events first (they came before text)
     for (const evt of this.#pendingToolEvents) {
       if (this.#failed) break;
-      this.#outbound.streamEvent(this.#messageId, evt);
+      const sent = this.#outbound.streamEvent(this.#messageId, evt);
+      if (!sent) {
+        this.#markSendFailed({
+          kind: "stream_event",
+          eventKind: evt.kind,
+          message: "streamEvent send failed (connection not open)",
+        });
+        break;
+      }
     }
     this.#pendingToolEvents.length = 0;
 
@@ -201,10 +226,33 @@ export class StreamSession {
       if (this.#failed) break;
       const sent = this.#outbound.streamToken(this.#messageId, text);
       if (!sent) {
-        console.error("[type] streamToken send failed (connection not open)");
-        this.#failed = true;
+        this.#markSendFailed({
+          kind: "stream_token",
+          message: "streamToken send failed (connection not open)",
+        });
       }
     }
     this.#pendingTokens.length = 0;
+  }
+
+  #markSendFailed(params: {
+    kind: "stream_start" | "stream_token" | "stream_event" | "stream_finish";
+    message: string;
+    eventKind?: string;
+  }): void {
+    if (this.#failed) return;
+    this.#failed = true;
+    this.#clearAckTimeout();
+    this.#pendingAck = null;
+    this.#finishRequested = false;
+    this.#pendingTokens.length = 0;
+    this.#pendingToolEvents.length = 0;
+
+    const context = {
+      messageId: this.#messageId,
+      sendKind: params.kind,
+      eventKind: params.eventKind ?? null,
+    };
+    console.error(`[type] ${params.message}`, context);
   }
 }
