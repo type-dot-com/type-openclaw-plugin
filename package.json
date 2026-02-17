@@ -1,6 +1,6 @@
 {
-  "name": "@openclaw/type",
-  "version": "0.1.0",
+  "name": "@type-dot-com/type-openclaw-plugin",
+  "version": "0.1.1",
   "description": "OpenClaw channel plugin for Type team chat integration via WebSocket",
   "type": "module",
   "main": "src/index.ts",
@@ -32,5 +32,8 @@
   "devDependencies": {
     "typescript": "^5.7.3",
     "@types/ws": "^8.5.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
