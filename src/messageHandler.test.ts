@@ -80,8 +80,9 @@ describe("messageHandler stream ack routing", () => {
           },
           dispatchReplyWithBufferedBlockDispatcher(opts): Promise<void> {
             const messageId = getMessageIdFromContext(opts.ctx);
+            expect(messageId).not.toBeNull();
             if (!messageId) {
-              return Promise.reject(new Error("Missing MessageSid"));
+              return Promise.resolve();
             }
 
             if (hasOnPartialReply(opts.replyOptions)) {

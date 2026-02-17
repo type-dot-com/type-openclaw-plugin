@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 /**
  * Tool Event Parsing
  *
@@ -5,10 +7,13 @@
  * tool-call and tool-result stream events for Type's UI.
  */
 
-export interface ToolEventPayload {
-  kind: string;
-  [key: string]: unknown;
-}
+export const ToolEventPayloadSchema = z
+  .object({
+    kind: z.string(),
+  })
+  .passthrough();
+
+export type ToolEventPayload = z.infer<typeof ToolEventPayloadSchema>;
 
 /**
  * Parse formatted tool text into a tool name and output.

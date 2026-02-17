@@ -5,7 +5,8 @@
  * stream_start, ack gating, token/event buffering, and finish.
  */
 
-import type { ToolEventPayload } from "./toolEvents.js";
+import type { z } from "zod";
+import type { ToolEventPayload, ToolEventPayloadSchema } from "./toolEvents.js";
 
 const ACK_TIMEOUT_MS = 5000;
 
@@ -14,7 +15,7 @@ export interface StreamOutbound {
   streamToken: (messageId: string, text: string) => boolean;
   streamEvent: (
     messageId: string,
-    event: { kind: string; [key: string]: unknown },
+    event: z.infer<typeof ToolEventPayloadSchema>,
   ) => boolean;
   finishStream: (messageId: string) => boolean;
 }
