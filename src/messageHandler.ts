@@ -49,6 +49,9 @@ const deferredCleanupByMessageId = new Map<
   ReturnType<typeof setTimeout>
 >();
 const DEFERRED_ACK_CLEANUP_MS = 6000;
+type ThreadTriggerContext = NonNullable<
+  NonNullable<TypeMessageEvent["context"]>["thread"]
+>;
 
 function trackSession(messageId: string, session: StreamSession): void {
   const existing = sessionsByMessageId.get(messageId);
@@ -250,6 +253,34 @@ function buildUntrustedContextBlocks(msg: TypeMessageEvent): string[] {
   return blocks;
 }
 
+function buildBodyForAgent(params: {
+  messageBody: string;
+  inboundHistory: Array<{ sender: string; body: string; timestamp?: number }>;
+  threadContext: ThreadTriggerContext | null | undefined;
+}): string {
+  const { messageBody, inboundHistory, threadContext } = params;
+
+  if (inboundHistory.length === 0 && !threadContext?.threadTitle) {
+    return messageBody;
+  }
+
+  const sections: string[] = [];
+
+  if (threadContext?.threadTitle) {
+    sections.push(`Thread title: ${threadContext.threadTitle}`);
+  }
+
+  if (inboundHistory.length > 0) {
+    const historyLines = inboundHistory.map(
+      (entry) => `- ${entry.sender}: ${entry.body}`,
+    );
+    sections.push(["Conversation history:", ...historyLines].join("\n"));
+  }
+
+  sections.push(`Current message: ${messageBody}`);
+  return sections.join("\n\n");
+}
+
 /**
  * Resolve the pending stream_start ack on a specific session.
  * Falls back to the oldest pending session when messageId is missing.
@@ -320,10 +351,19 @@ export function handleInboundMessage(params: {
     const untrustedContext = buildUntrustedContextBlocks(msg);
     const threadContext = msg.context?.thread;
     const channelContext = msg.context?.channel;
+    const bodyForAgent = buildBodyForAgent({
+      messageBody,
+      inboundHistory,
+      threadContext,
+    });
+
+    log?.info(
+      `[type] Trigger context summary: threadMessages=${threadContext?.messages.length ?? 0}, recentMessages=${msg.context?.recentMessages?.length ?? 0}`,
+    );
 
     const ctxPayload = runtime.channel.reply.finalizeInboundContext({
-      Body: messageBody,
-      BodyForAgent: messageBody,
+      Body: bodyForAgent,
+      BodyForAgent: bodyForAgent,
       BodyForCommands: messageBody,
       RawBody: messageBody,
       CommandBody: messageBody,

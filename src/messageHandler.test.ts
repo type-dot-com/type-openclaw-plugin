@@ -198,7 +198,7 @@ describe("messageHandler stream ack routing", () => {
     ]);
   });
 
-  test("keeps message body clean and forwards rich trigger context as structured fields", async () => {
+  test("embeds thread history in BodyForAgent while preserving RawBody", async () => {
     let capturedContext: Record<string, unknown> | null = null;
 
     const outbound: StreamOutbound = {
@@ -299,10 +299,22 @@ describe("messageHandler stream ack routing", () => {
       return;
     }
 
-    expect(capturedContext.Body).toBe("Please summarize this thread.");
+    const bodyValue = capturedContext.Body;
+    expect(typeof bodyValue).toBe("string");
+    if (typeof bodyValue !== "string") {
+      return;
+    }
+    expect(bodyValue).toContain("Thread title: Incident follow-up");
+    expect(bodyValue).toContain("Conversation history:");
+    expect(bodyValue).toContain("- Alice: What happened?");
+    expect(bodyValue).toContain("- Assistant: A deployment failed.");
+    expect(bodyValue).toContain(
+      "Current message: Please summarize this thread.",
+    );
+
     expect(capturedContext.RawBody).toBe("Please summarize this thread.");
     expect(capturedContext.CommandBody).toBe("Please summarize this thread.");
-    expect(capturedContext.BodyForAgent).toBe("Please summarize this thread.");
+    expect(capturedContext.BodyForAgent).toBe(bodyValue);
     expect(capturedContext.BodyForCommands).toBe(
       "Please summarize this thread.",
     );
