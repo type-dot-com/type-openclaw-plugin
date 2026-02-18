@@ -53,7 +53,6 @@ describe("typeInboundEventSchema", () => {
           triggeringUser: {
             id: "user_1",
             name: "Alice",
-            email: "alice@example.com",
           },
           channel: {
             id: "ch_456",
@@ -64,7 +63,6 @@ describe("typeInboundEventSchema", () => {
               {
                 id: "user_1",
                 name: "Alice",
-                email: "alice@example.com",
                 role: "owner",
                 avatarUrl: null,
               },
@@ -83,7 +81,6 @@ describe("typeInboundEventSchema", () => {
                 sender: {
                   id: "user_1",
                   name: "Alice",
-                  email: "alice@example.com",
                 },
               },
             ],

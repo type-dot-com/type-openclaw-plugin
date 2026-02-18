@@ -239,7 +239,6 @@ describe("messageHandler stream ack routing", () => {
         triggeringUser: {
           id: "user_1",
           name: "Alice",
-          email: "alice@example.com",
         },
         channel: {
           id: "ch_1",
@@ -250,7 +249,6 @@ describe("messageHandler stream ack routing", () => {
             {
               id: "user_1",
               name: "Alice",
-              email: "alice@example.com",
               role: "owner",
               avatarUrl: null,
             },
@@ -269,7 +267,6 @@ describe("messageHandler stream ack routing", () => {
               sender: {
                 id: "user_1",
                 name: "Alice",
-                email: "alice@example.com",
               },
             },
             {

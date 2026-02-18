@@ -14,13 +14,11 @@ import { z } from "zod";
 const typeTriggerUserSchema = z.object({
   id: z.string(),
   name: z.string(),
-  email: z.string().nullable(),
 });
 
 const typeChannelMemberSchema = z.object({
   id: z.string(),
   name: z.string(),
-  email: z.string(),
   role: z.enum(["owner", "admin", "member", "viewer"]),
   avatarUrl: z.string().nullable(),
 });

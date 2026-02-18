@@ -195,7 +195,6 @@ function buildUntrustedContextBlocks(msg: TypeMessageEvent): string[] {
           {
             id: context.triggeringUser.id,
             name: context.triggeringUser.name,
-            email: context.triggeringUser.email,
           },
           null,
           2,
@@ -219,7 +218,6 @@ function buildUntrustedContextBlocks(msg: TypeMessageEvent): string[] {
             members: (context.channel.members ?? []).map((member) => ({
               id: member.id,
               name: member.name,
-              email: member.email,
               role: member.role,
               avatarUrl: member.avatarUrl,
             })),
