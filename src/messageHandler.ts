@@ -343,7 +343,7 @@ export function handleInboundMessage(params: {
   );
 
   try {
-    const chatType = "channel";
+    const chatType = msg.parentMessageId ? "thread" : "channel";
     const senderId = msg.sender?.id ?? "unknown";
     const senderName = msg.sender?.name ?? "Unknown";
     const messageBody = msg.content ?? "";

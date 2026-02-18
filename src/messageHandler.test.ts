@@ -314,6 +314,7 @@ describe("messageHandler stream ack routing", () => {
 
     expect(capturedContext.RawBody).toBe("Please summarize this thread.");
     expect(capturedContext.CommandBody).toBe("Please summarize this thread.");
+    expect(capturedContext.ChatType).toBe("thread");
     expect(capturedContext.BodyForAgent).toBe(bodyValue);
     expect(capturedContext.BodyForCommands).toBe(
       "Please summarize this thread.",
