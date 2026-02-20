@@ -17,6 +17,7 @@ import {
 
 const BASE_RECONNECT_DELAY_MS = 1000;
 const MAX_RECONNECT_DELAY_MS = 60000;
+const PING_INTERVAL_MS = 30000; // Client-side keepalive every 30s
 
 export interface ConnectionConfig {
   token: string;
@@ -29,6 +30,7 @@ export interface ConnectionConfig {
 export class TypeConnection {
   private ws: WebSocket | null = null;
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+  private pingInterval: ReturnType<typeof setInterval> | null = null;
   private reconnectAttempts = 0;
   private stopped = false;
   private readonly config: ConnectionConfig;
@@ -44,6 +46,7 @@ export class TypeConnection {
 
   disconnect(): void {
     this.stopped = true;
+    this.stopPingInterval();
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -51,6 +54,22 @@ export class TypeConnection {
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
       this.reconnectTimeout = null;
+    }
+  }
+
+  private startPingInterval(): void {
+    this.stopPingInterval();
+    this.pingInterval = setInterval(() => {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        this.send({ type: "ping" });
+      }
+    }, PING_INTERVAL_MS);
+  }
+
+  private stopPingInterval(): void {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
     }
   }
 
@@ -84,6 +103,7 @@ export class TypeConnection {
 
     ws.on("open", () => {
       this.reconnectAttempts = 0;
+      this.startPingInterval();
       this.config.onConnected?.();
     });
 
@@ -97,6 +117,7 @@ export class TypeConnection {
 
     ws.on("close", (code: number) => {
       this.ws = null;
+      this.stopPingInterval();
       this.config.onDisconnected?.();
       // Code 4000 = replaced by another connection — don't reconnect (avoids storm)
       if (!this.stopped && code !== 4000) {
@@ -122,9 +143,13 @@ export class TypeConnection {
 
     const msg = parsed.data;
 
-    // Handle ping internally
+    // Handle ping/pong internally (keepalive)
     if (msg.type === "ping") {
       this.send({ type: "pong" });
+      return;
+    }
+    if (msg.type === "pong") {
+      // Acknowledgement of our keepalive ping — no action needed
       return;
     }
 
