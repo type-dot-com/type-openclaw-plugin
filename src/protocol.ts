@@ -76,6 +76,10 @@ const typePingEventSchema = z.object({
   timestamp: z.number(),
 });
 
+const typePongEventSchema = z.object({
+  type: z.literal("pong"),
+});
+
 const typeSuccessEventSchema = z.object({
   type: z.literal("success"),
   requestType: z.string(),
@@ -93,6 +97,7 @@ const typeErrorEventSchema = z.object({
 export const typeInboundEventSchema = z.discriminatedUnion("type", [
   typeMessageEventSchema,
   typePingEventSchema,
+  typePongEventSchema,
   typeSuccessEventSchema,
   typeErrorEventSchema,
 ]);
@@ -106,6 +111,10 @@ export type TypeInboundEvent = z.infer<typeof typeInboundEventSchema>;
 // ---------------------------------------------------------------------------
 // Outbound: Plugin -> Type Server
 // ---------------------------------------------------------------------------
+
+export interface PingMessage {
+  type: "ping";
+}
 
 export interface PongMessage {
   type: "pong";
@@ -144,6 +153,7 @@ export interface StreamFinishMessage {
 }
 
 export type TypeOutboundMessage =
+  | PingMessage
   | PongMessage
   | SendMessage
   | RespondMessage
