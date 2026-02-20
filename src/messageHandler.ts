@@ -324,6 +324,24 @@ export function rejectStreamAck(error: Error, messageId?: string): void {
 }
 
 /**
+ * Resolve the agent id for a given channel from the config bindings.
+ * Returns the first matching agentId, or undefined if no binding matches.
+ */
+function resolveAgentFromBindings(
+  cfg: Record<string, unknown>,
+  channel: string,
+): string | undefined {
+  const bindings = (cfg as { bindings?: Array<{ agentId?: string; match?: { channel?: string } }> }).bindings;
+  if (!Array.isArray(bindings)) return undefined;
+  for (const binding of bindings) {
+    if (binding.match?.channel === channel && binding.agentId) {
+      return binding.agentId;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Handle a single inbound message trigger from Type.
  */
 export function handleInboundMessage(params: {
@@ -359,6 +377,9 @@ export function handleInboundMessage(params: {
       `[type] Trigger context summary: threadMessages=${threadContext?.messages.length ?? 0}, recentMessages=${msg.context?.recentMessages?.length ?? 0}`,
     );
 
+    // Resolve the agent from config bindings (supports multi-agent routing)
+    const agentId = resolveAgentFromBindings(cfg, "type") ?? "main";
+
     const ctxPayload = runtime.channel.reply.finalizeInboundContext({
       Body: bodyForAgent,
       BodyForAgent: bodyForAgent,
@@ -369,8 +390,8 @@ export function handleInboundMessage(params: {
       From: `type:${senderId}`,
       To: `type:${accountId}`,
       SessionKey: msg.parentMessageId
-        ? `agent:main:type:${msg.parentMessageId}`
-        : `agent:main:type:${msg.channelId}:${msg.messageId}`,
+        ? `agent:${agentId}:type:${msg.parentMessageId}`
+        : `agent:${agentId}:type:${msg.channelId}:${msg.messageId}`,
       AccountId: accountId,
       ChatType: chatType,
       ConversationLabel: msg.channelName ?? msg.channelId,
