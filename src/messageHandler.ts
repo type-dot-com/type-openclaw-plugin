@@ -6,6 +6,7 @@
  * the standard OpenClaw agent reply pipeline.
  */
 
+import { z } from "zod";
 import type { TypeMessageEvent } from "./protocol.js";
 import { type StreamOutbound, StreamSession } from "./streamSession.js";
 import { createToolEvents } from "./toolEvents.js";
@@ -323,6 +324,17 @@ export function rejectStreamAck(error: Error, messageId?: string): void {
   }
 }
 
+const bindingsConfigSchema = z.object({
+  bindings: z
+    .array(
+      z.object({
+        agentId: z.string().optional(),
+        match: z.object({ channel: z.string().optional() }).optional(),
+      }),
+    )
+    .optional(),
+});
+
 /**
  * Resolve the agent id for a given channel from the config bindings.
  * Returns the first matching agentId, or undefined if no binding matches.
@@ -331,8 +343,9 @@ function resolveAgentFromBindings(
   cfg: Record<string, unknown>,
   channel: string,
 ): string | undefined {
-  const bindings = (cfg as { bindings?: Array<{ agentId?: string; match?: { channel?: string } }> }).bindings;
-  if (!Array.isArray(bindings)) return undefined;
+  const parsed = bindingsConfigSchema.safeParse(cfg);
+  if (!parsed.success) return undefined;
+  const bindings = parsed.data.bindings ?? [];
   for (const binding of bindings) {
     if (binding.match?.channel === channel && binding.agentId) {
       return binding.agentId;

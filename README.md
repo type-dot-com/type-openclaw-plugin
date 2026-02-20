@@ -1,4 +1,4 @@
-# @openclaw/type
+# @type-dot-com/type
 
 OpenClaw channel plugin for [Type](https://type.chat) team chat integration via WebSocket.
 
