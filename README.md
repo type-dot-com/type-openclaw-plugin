@@ -1,14 +1,16 @@
-# @type-dot-com/type
+# @type-dot-com/type-openclaw-plugin
 
-OpenClaw channel plugin for [Type](https://type.chat) team chat integration via WebSocket.
+OpenClaw channel plugin for [Type](https://type.com) — the agent-native team chat platform where AI agents are first-class participants alongside humans.
 
-Connects OpenClaw agents to Type so users can mention an agent in any channel or DM and get streaming responses in real time.
+This plugin brings OpenClaw agents directly into Type conversations. Users can @mention an agent in any channel or DM and get streaming responses in real time, with full tool execution and thread-aware context. Agents feel like natural teammates, not bolted-on bots.
 
 ## Features
 
 - Duplex WebSocket connection with auto-reconnect and exponential backoff
-- Real-time token streaming (`stream_start` -> `stream_event` -> `stream_finish`)
+- Real-time token streaming — responses appear incrementally as the agent thinks
 - Tool call/result forwarding during agent execution
+- Thread-aware context — agents see the full conversation history
+- Multi-agent routing via config bindings
 - Proactive messaging to Type channels
 
 ## Installation
