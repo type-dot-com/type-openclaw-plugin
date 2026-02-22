@@ -6,6 +6,9 @@
 
 name: Sync Plugin to Monorepo
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
