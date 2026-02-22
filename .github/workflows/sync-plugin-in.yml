@@ -49,11 +49,21 @@ jobs:
             echo "No changes to sync"
             exit 0
           fi
+          COMMIT_LOG=$(cd "$GITHUB_WORKSPACE" && git log --oneline -5)
+          LATEST_MSG=$(cd "$GITHUB_WORKSPACE" && git log -1 --pretty=%s)
           BRANCH="sync-plugin-in/$(date +%Y%m%d-%H%M%S)"
           git checkout -b "$BRANCH"
-          git commit -m "sync: update openclaw-type from public repo"
+          git commit -m "sync(openclaw-plugin): ${LATEST_MSG}"
           git push -u origin "$BRANCH"
           gh pr create \
-            --title "sync: update openclaw-type from public repo" \
-            --body "Automated sync from [type-dot-com/type-openclaw-plugin](https://github.com/type-dot-com/type-openclaw-plugin)." \
+            --title "sync(openclaw-plugin): ${LATEST_MSG}" \
+            --body "$(cat <<EOF
+          Automated sync from [type-dot-com/type-openclaw-plugin](https://github.com/type-dot-com/type-openclaw-plugin).
+
+          Recent commits on plugin repo:
+          \`\`\`
+          ${COMMIT_LOG}
+          \`\`\`
+          EOF
+          )" \
             --base main
