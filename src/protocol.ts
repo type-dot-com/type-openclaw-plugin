@@ -59,6 +59,7 @@ const typeMessageEventSchema = z.object({
   channelId: z.string(),
   channelName: z.string().nullable(),
   parentMessageId: z.string().nullable(),
+  chatType: z.enum(["channel", "thread", "dm"]),
   sender: z
     .object({
       id: z.string(),

@@ -335,10 +335,6 @@ const bindingsConfigSchema = z.object({
     .optional(),
 });
 
-/**
- * Resolve the agent id for a given channel from the config bindings.
- * Returns the first matching agentId, or undefined if no binding matches.
- */
 function resolveAgentFromBindings(
   cfg: Record<string, unknown>,
   channel: string,
@@ -372,7 +368,6 @@ export function handleInboundMessage(params: {
   );
 
   try {
-    const chatType = msg.parentMessageId ? "thread" : "channel";
     const senderId = msg.sender?.id ?? "unknown";
     const senderName = msg.sender?.name ?? "Unknown";
     const messageBody = msg.content ?? "";
@@ -390,7 +385,6 @@ export function handleInboundMessage(params: {
       `[type] Trigger context summary: threadMessages=${threadContext?.messages.length ?? 0}, recentMessages=${msg.context?.recentMessages?.length ?? 0}`,
     );
 
-    // Resolve the agent from config bindings (supports multi-agent routing)
     const agentId = resolveAgentFromBindings(cfg, "type") ?? "main";
 
     const ctxPayload = runtime.channel.reply.finalizeInboundContext({
@@ -402,11 +396,20 @@ export function handleInboundMessage(params: {
       CommandAuthorized: true,
       From: `type:${senderId}`,
       To: `type:${accountId}`,
-      SessionKey: msg.parentMessageId
-        ? `agent:${agentId}:type:${msg.parentMessageId}`
-        : `agent:${agentId}:type:${msg.channelId}:${msg.messageId}`,
+      SessionKey: (() => {
+        switch (msg.chatType) {
+          case "thread":
+            return msg.parentMessageId
+              ? `agent:${agentId}:type:${msg.parentMessageId}`
+              : `agent:${agentId}:type:${msg.channelId}:${msg.messageId}`;
+          case "dm":
+            return `agent:${agentId}:type:${msg.channelId}`;
+          default:
+            return `agent:${agentId}:type:${msg.channelId}:${msg.messageId}`;
+        }
+      })(),
       AccountId: accountId,
-      ChatType: chatType,
+      ChatType: msg.chatType,
       ConversationLabel: msg.channelName ?? msg.channelId,
       GroupChannel: channelContext?.name ?? msg.channelName ?? msg.channelId,
       GroupSubject: channelContext?.description ?? null,
