@@ -30,6 +30,7 @@ jobs:
           rsync -av --delete \
             --exclude '.git' \
             --exclude 'node_modules' \
+            --exclude 'monorepo' \
             ./ monorepo/packages/openclaw-type/
 
       - name: Create PR if changed
