@@ -32,6 +32,7 @@ jobs:
         run: |
           rsync -av --delete \
             --exclude '.git' \
+            --exclude '.github' \
             --exclude 'node_modules' \
             --exclude 'monorepo' \
             ./ monorepo/packages/openclaw-type/
