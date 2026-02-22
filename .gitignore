@@ -1,0 +1,21 @@
+node_modules/
+dist/
+
+# secrets & env
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.cert
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
