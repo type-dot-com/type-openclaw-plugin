@@ -1,0 +1,58 @@
+# This workflow lives on the PUBLIC repo (type-dot-com/type-openclaw-plugin).
+# Copy this file to .github/workflows/sync-plugin-in.yml on that repo.
+#
+# It syncs changes from the public plugin repo back to the monorepo
+# by opening a PR whenever main is updated (e.g., after merging an external PR).
+
+name: Sync Plugin to Monorepo
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  sync-in:
+    runs-on: ubuntu-latest
+    if: github.actor != 'github-actions[bot]'
+    steps:
+      - name: Checkout public repo
+        uses: actions/checkout@v4
+
+      - name: Checkout monorepo
+        uses: actions/checkout@v4
+        with:
+          repository: type-dot-com/type
+          token: ${{ secrets.MONOREPO_PAT }}
+          path: monorepo
+
+      - name: Sync files
+        run: |
+          rsync -av --delete \
+            --exclude '.git' \
+            --exclude 'node_modules' \
+            --exclude 'monorepo' \
+            ./ monorepo/packages/openclaw-type/
+
+      - name: Create PR if changed
+        working-directory: monorepo
+        env:
+          GH_TOKEN: ${{ secrets.MONOREPO_PAT }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to sync"
+            exit 0
+          fi
+          BRANCH="sync-plugin-in/$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+          git commit -m "sync: update openclaw-type from public repo"
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "sync: update openclaw-type from public repo" \
+            --body "Automated sync from [type-dot-com/type-openclaw-plugin](https://github.com/type-dot-com/type-openclaw-plugin)." \
+            --base main
