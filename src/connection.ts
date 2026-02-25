@@ -18,6 +18,7 @@ import {
 const BASE_RECONNECT_DELAY_MS = 1000;
 const MAX_RECONNECT_DELAY_MS = 60000;
 const PING_INTERVAL_MS = 30000; // Client-side keepalive every 30s
+const PONG_TIMEOUT_FACTOR = 3; // Force reconnect after N missed pongs
 
 export interface ConnectionConfig {
   token: string;
@@ -31,12 +32,42 @@ export class TypeConnection {
   private ws: WebSocket | null = null;
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
-  private reconnectAttempts = 0;
+  private _reconnectAttempts = 0;
   private stopped = false;
+  private _lastPongAt: number = 0;
+  private _consecutiveAckFailures = 0;
   private readonly config: ConnectionConfig;
 
   constructor(config: ConnectionConfig) {
     this.config = config;
+  }
+
+  get reconnectAttempts(): number {
+    return this._reconnectAttempts;
+  }
+
+  get lastPongAt(): number {
+    return this._lastPongAt;
+  }
+
+  get consecutiveAckFailures(): number {
+    return this._consecutiveAckFailures;
+  }
+
+  /** Record a stream_start ack success (resets failure counter). */
+  recordAckSuccess(): void {
+    this._consecutiveAckFailures = 0;
+  }
+
+  /** Record a stream_start ack failure. Force reconnect after 3 in a row. */
+  recordAckFailure(): void {
+    this._consecutiveAckFailures++;
+    if (this._consecutiveAckFailures >= 3) {
+      console.error(
+        `[Type WS] ${this._consecutiveAckFailures} consecutive ack failures — forcing reconnect`,
+      );
+      this.forceReconnect();
+    }
   }
 
   connect(): void {
@@ -57,10 +88,36 @@ export class TypeConnection {
     }
   }
 
+  /** Force-close the current connection and trigger reconnect. */
+  private forceReconnect(): void {
+    if (this.stopped) return;
+    console.warn("[Type WS] Forcing reconnect...");
+    this.stopPingInterval();
+    if (this.ws) {
+      try {
+        this.ws.close();
+      } catch {
+        // ignore
+      }
+      this.ws = null;
+    }
+    this.scheduleReconnect();
+  }
+
   private startPingInterval(): void {
     this.stopPingInterval();
+    this._lastPongAt = Date.now(); // assume healthy at connect
     this.pingInterval = setInterval(() => {
       if (this.ws?.readyState === WebSocket.OPEN) {
+        // Check for pong timeout before sending next ping
+        const sincePong = Date.now() - this._lastPongAt;
+        if (sincePong > PING_INTERVAL_MS * PONG_TIMEOUT_FACTOR) {
+          console.error(
+            `[Type WS] No pong received in ${(sincePong / 1000).toFixed(0)}s — forcing reconnect`,
+          );
+          this.forceReconnect();
+          return;
+        }
         this.send({ type: "ping" });
       }
     }, PING_INTERVAL_MS);
@@ -102,7 +159,8 @@ export class TypeConnection {
     this.ws = ws;
 
     ws.on("open", () => {
-      this.reconnectAttempts = 0;
+      this._reconnectAttempts = 0;
+      this._consecutiveAckFailures = 0;
       this.startPingInterval();
       this.config.onConnected?.();
     });
@@ -149,7 +207,7 @@ export class TypeConnection {
       return;
     }
     if (msg.type === "pong") {
-      // Acknowledgement of our keepalive ping — no action needed
+      this._lastPongAt = Date.now();
       return;
     }
 
@@ -159,14 +217,14 @@ export class TypeConnection {
 
   private scheduleReconnect(): void {
     const baseDelay = Math.min(
-      BASE_RECONNECT_DELAY_MS * 2 ** this.reconnectAttempts,
+      BASE_RECONNECT_DELAY_MS * 2 ** this._reconnectAttempts,
       MAX_RECONNECT_DELAY_MS,
     );
     // Add jitter to prevent thundering herd
     const delay = Math.round(baseDelay * (0.5 + Math.random() * 0.5));
-    this.reconnectAttempts++;
+    this._reconnectAttempts++;
     console.log(
-      `[Type WS] Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${this.reconnectAttempts})...`,
+      `[Type WS] Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${this._reconnectAttempts})...`,
     );
     this.reconnectTimeout = setTimeout(() => {
       this.reconnectTimeout = null;
