@@ -147,6 +147,14 @@ export class StreamSession {
   }
 
   /**
+   * Reset the accumulated text length counter. Call after a tool event
+   * when the dispatcher resets its text accumulator (e.g., between blocks).
+   */
+  resetTextAccumulator(): void {
+    this.#lastSentLength = 0;
+  }
+
+  /**
    * Send a tool event (tool-call, tool-result, etc.), buffering if needed.
    */
   sendToolEvent(event: ToolEventPayload): void {

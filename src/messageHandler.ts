@@ -440,12 +440,15 @@ export function handleInboundMessage(params: {
           ) => {
             // Handle tool results as native tool-call + tool-result stream
             // events so they render as collapsible cards in Type's UI.
-            if (info.kind === "tool" && payload.text) {
+            if (info.kind === "tool") {
               if (session.isFailed) return;
-              const [toolCall, toolResult] = createToolEvents(payload.text);
-              session.sendToolEvent(toolCall);
-              session.sendToolEvent(toolResult);
-              if (session.isStarted) {
+              if (payload.text) {
+                const [toolCall, toolResult] = createToolEvents(payload.text);
+                session.sendToolEvent(toolCall);
+                session.sendToolEvent(toolResult);
+              }
+              session.resetTextAccumulator();
+              if (session.isStarted && !session.isFailed) {
                 markSessionAwaitingAck(msg.messageId);
               }
             }

@@ -9,6 +9,7 @@
  * inbound messages through the standard OpenClaw agent pipeline.
  */
 
+import { fetchChannelsCached, resolveChannelId } from "./channels.js";
 import { listAccountIds, resolveAccount } from "./config.js";
 import { TypeConnection } from "./connection.js";
 import {
@@ -47,29 +48,198 @@ const typePlugin = {
     listAccountIds: (cfg: Record<string, unknown>) => listAccountIds(cfg),
     resolveAccount: (cfg: Record<string, unknown>, accountId?: string) =>
       resolveAccount(cfg, accountId),
+    isConfigured: (
+      account: { token?: string },
+      _cfg: Record<string, unknown>,
+    ): boolean => Boolean(account.token),
+  },
+
+  directory: {
+    listGroups: async ({
+      cfg,
+      accountId,
+      query,
+      limit,
+    }: {
+      cfg: Record<string, unknown>;
+      accountId?: string | null;
+      query?: string;
+      limit?: number;
+      runtime?: unknown;
+    }): Promise<
+      { id: string; name: string; kind: "group"; description?: string }[]
+    > => {
+      const account = resolveAccount(cfg, accountId ?? undefined);
+      if (!account.token) return [];
+      let channels: Awaited<ReturnType<typeof fetchChannelsCached>>;
+      try {
+        channels = await fetchChannelsCached(account);
+      } catch {
+        return [];
+      }
+      if (query) {
+        const q = query.toLowerCase();
+        channels = channels.filter(
+          (ch) =>
+            ch.name.toLowerCase().includes(q) ||
+            (ch.description ?? "").toLowerCase().includes(q),
+        );
+      }
+      if (limit !== undefined && limit > 0) {
+        channels = channels.slice(0, limit);
+      }
+      return channels.map((ch) => ({
+        id: ch.id,
+        name: ch.name,
+        kind: "group" as const,
+        description: ch.description ?? undefined,
+      }));
+    },
+  },
+
+  resolver: {
+    resolveTargets: async ({
+      cfg,
+      accountId,
+      inputs,
+      kind,
+    }: {
+      cfg: Record<string, unknown>;
+      accountId?: string | null;
+      inputs: string[];
+      kind?: "user" | "group";
+      runtime?: unknown;
+    }): Promise<
+      {
+        input: string;
+        resolved: boolean;
+        id?: string;
+        name?: string;
+        kind?: "group";
+      }[]
+    > => {
+      if (kind === "user") {
+        return inputs.map((input) => ({ input, resolved: false }));
+      }
+      const account = resolveAccount(cfg, accountId ?? undefined);
+      if (!account.token) {
+        return inputs.map((input) => ({ input, resolved: false }));
+      }
+      let channels: Awaited<ReturnType<typeof fetchChannelsCached>>;
+      try {
+        channels = await fetchChannelsCached(account);
+      } catch {
+        return inputs.map((input) => ({ input, resolved: false }));
+      }
+      const byId = new Map(channels.map((ch) => [ch.id, ch]));
+
+      return inputs.map((input) => {
+        const normalized = input.startsWith("#") ? input.slice(1) : input;
+        const match =
+          byId.get(input) ??
+          channels.find(
+            (ch) => ch.name.toLowerCase() === normalized.toLowerCase(),
+          );
+        if (!match) return { input, resolved: false };
+        return {
+          input,
+          resolved: true,
+          id: match.id,
+          name: match.name,
+          kind: "group" as const,
+        };
+      });
+    },
   },
 
   outbound: {
     deliveryMode: "direct" satisfies string,
     textChunkLimit: 4000,
 
+    resolveTarget: ({
+      to,
+    }: {
+      cfg?: Record<string, unknown>;
+      to?: string;
+      allowFrom?: string[];
+      accountId?: string | null;
+      mode?: string;
+    }): { ok: true; to: string } | { ok: false; error: string } => {
+      if (!to) {
+        return { ok: false, error: "Target channel ID is required" };
+      }
+      return { ok: true, to };
+    },
+
     sendText: async ({
       to,
       text,
       replyToId,
+      cfg,
+      accountId,
     }: {
       to: string;
       text: string;
       replyToId?: string;
-    }) => {
+      cfg?: Record<string, unknown>;
+      accountId?: string | null;
+    }): Promise<
+      { ok: true; channel: string } | { ok: false; error: string }
+    > => {
       if (!activeOutbound) {
         return { ok: false, error: "Not connected" };
       }
-      const sent = activeOutbound.sendMessage(to, text, replyToId);
-      if (!sent) {
-        return { ok: false, error: "Failed to send message" };
+      try {
+        const account = resolveAccount(cfg ?? {}, accountId ?? undefined);
+        const channelId = await resolveChannelId(to, account);
+        const sent = activeOutbound.sendMessage(channelId, text, replyToId);
+        if (!sent) {
+          return { ok: false, error: "Failed to send message" };
+        }
+        return { ok: true, channel: "type" };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
       }
-      return { ok: true, channel: "type" };
+    },
+
+    sendMedia: async ({
+      to,
+      text,
+      mediaUrl,
+      replyToId,
+      cfg,
+      accountId,
+    }: {
+      to: string;
+      text: string;
+      mediaUrl: string;
+      replyToId?: string;
+      cfg?: Record<string, unknown>;
+      accountId?: string | null;
+    }): Promise<
+      { ok: true; channel: string } | { ok: false; error: string }
+    > => {
+      if (!activeOutbound) {
+        return { ok: false, error: "Not connected" };
+      }
+      try {
+        const account = resolveAccount(cfg ?? {}, accountId ?? undefined);
+        const channelId = await resolveChannelId(to, account);
+        const caption = text || `[Media: ${mediaUrl}]`;
+        const sent = activeOutbound.sendMessage(channelId, caption, replyToId);
+        if (!sent) {
+          return { ok: false, error: "Failed to send message" };
+        }
+        return { ok: true, channel: "type" };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
     },
   },
 
