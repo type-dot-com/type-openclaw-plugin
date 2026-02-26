@@ -7,11 +7,14 @@
 
 import { z } from "zod";
 
+export const DEFAULT_TYPE_WS_URL = "wss://api.type.com/api/agents/ws";
+
 const typeChannelConfigSchema = z.object({
   enabled: z.boolean().optional().default(false),
   token: z.string().optional().default(""),
-  wsUrl: z.string().optional().default("wss://api.type.com/api/agents/ws"),
+  wsUrl: z.string().optional().default(DEFAULT_TYPE_WS_URL),
   agentId: z.string().optional().default(""),
+  mediaLocalRoots: z.array(z.string()).optional().default([]),
 });
 
 const cfgSchema = z.object({
@@ -27,6 +30,7 @@ export interface TypeAccountConfig {
   token: string;
   wsUrl: string;
   agentId: string;
+  mediaLocalRoots: readonly string[];
   enabled: boolean;
 }
 
@@ -56,8 +60,9 @@ export function resolveAccount(
   return {
     accountId: accountId ?? "default",
     token: typeConfig?.token ?? "",
-    wsUrl: typeConfig?.wsUrl ?? "wss://api.type.com/api/agents/ws",
+    wsUrl: typeConfig?.wsUrl ?? DEFAULT_TYPE_WS_URL,
     agentId: typeConfig?.agentId ?? "",
+    mediaLocalRoots: typeConfig?.mediaLocalRoots ?? [],
     enabled: typeConfig?.enabled ?? false,
   };
 }

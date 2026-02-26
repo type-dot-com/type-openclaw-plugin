@@ -18,7 +18,8 @@ Connect OpenClaw agents to Type team chat via a duplex WebSocket.
       "enabled": true,
       "token": "ta_your_agent_token",
       "wsUrl": "wss://your-type-server/api/agents/ws",
-      "agentId": "agent_..."
+      "agentId": "agent_...",
+      "mediaLocalRoots": ["/home/daytona/.openclaw/workspace"]
     }
   }
 }
@@ -31,6 +32,7 @@ Connect OpenClaw agents to Type team chat via a duplex WebSocket.
 | `token` | Yes | Agent token from Type UI (`ta_`-prefixed) |
 | `wsUrl` | Yes | Type server WebSocket endpoint |
 | `agentId` | Yes | Agent ID from Type (shown in agent builder) |
+| `mediaLocalRoots` | Recommended | Allowed local directories for `sendMedia` local file paths |
 
 ### 2. Plugin Registration
 

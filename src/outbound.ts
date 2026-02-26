@@ -13,11 +13,12 @@ export class TypeOutboundHandler {
   /**
    * Send a non-streaming full response to a triggered message.
    */
-  respond(messageId: string, content: string): boolean {
+  respond(messageId: string, content: string, fileIds?: string[]): boolean {
     return this.connection.send({
       type: "respond",
       messageId,
       content,
+      ...(fileIds?.length ? { fileIds } : {}),
     });
   }
 
@@ -28,12 +29,14 @@ export class TypeOutboundHandler {
     channelId: string,
     content: string,
     parentMessageId?: string,
+    fileIds?: string[],
   ): boolean {
     return this.connection.send({
       type: "send",
       channelId,
       content,
       parentMessageId,
+      ...(fileIds?.length ? { fileIds } : {}),
     });
   }
 
@@ -75,10 +78,11 @@ export class TypeOutboundHandler {
   /**
    * Finalize a streaming response.
    */
-  finishStream(messageId: string): boolean {
+  finishStream(messageId: string, fileIds?: string[]): boolean {
     return this.connection.send({
       type: "stream_finish",
       messageId,
+      ...(fileIds?.length ? { fileIds } : {}),
     });
   }
 }

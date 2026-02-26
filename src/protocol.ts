@@ -53,6 +53,13 @@ const typeTriggerContextSchema = z.object({
   recentMessages: z.array(typeHistoryMessageSchema).nullable(),
 });
 
+const typeTriggerFileSchema = z.object({
+  id: z.string(),
+  filename: z.string(),
+  mimeType: z.string(),
+  sizeBytes: z.number(),
+});
+
 const typeMessageEventSchema = z.object({
   type: z.literal("message"),
   messageId: z.string(),
@@ -70,6 +77,7 @@ const typeMessageEventSchema = z.object({
   mentionsAgent: z.boolean(),
   timestamp: z.number(),
   context: typeTriggerContextSchema.nullable().optional(),
+  files: z.array(typeTriggerFileSchema).optional(),
 });
 
 const typePingEventSchema = z.object({
@@ -126,12 +134,14 @@ export interface SendMessage {
   channelId: string;
   content: string;
   parentMessageId?: string;
+  fileIds?: string[];
 }
 
 export interface RespondMessage {
   type: "respond";
   messageId: string;
   content: string;
+  fileIds?: string[];
 }
 
 export interface StreamStartMessage {
@@ -151,6 +161,7 @@ export interface StreamEventMessage {
 export interface StreamFinishMessage {
   type: "stream_finish";
   messageId: string;
+  fileIds?: string[];
 }
 
 export type TypeOutboundMessage =

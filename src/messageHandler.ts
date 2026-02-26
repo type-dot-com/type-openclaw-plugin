@@ -7,6 +7,7 @@
  */
 
 import { z } from "zod";
+import { resolveApiOriginFromWsUrl } from "./apiOrigin.js";
 import type { TypeMessageEvent } from "./protocol.js";
 import { type StreamOutbound, StreamSession } from "./streamSession.js";
 import { createToolEvents } from "./toolEvents.js";
@@ -42,6 +43,18 @@ export interface Logger {
   error: (msg: string) => void;
 }
 
+interface TypeInboundAccountContext {
+  token: string;
+  wsUrl: string;
+  agentId: string;
+}
+
+type InboundFile = NonNullable<TypeMessageEvent["files"]>[number];
+type InboundFileWithDownloadUrl = InboundFile & {
+  downloadUrl?: string;
+  url?: string;
+};
+
 const sessionsByMessageId = new Map<string, StreamSession>();
 const pendingAckOrder: string[] = [];
 const dispatchCompletedMessageIds = new Set<string>();
@@ -50,9 +63,25 @@ const deferredCleanupByMessageId = new Map<
   ReturnType<typeof setTimeout>
 >();
 const DEFERRED_ACK_CLEANUP_MS = 6000;
+const NO_REPLY_SENTINEL = "NO_REPLY";
+const NO_REPLY_SHORT_SENTINEL = "NO";
+const FILE_URL_FETCH_TIMEOUT_MS = 10_000;
+const downloadUrlResponseSchema = z.object({
+  downloadUrl: z.string().url().optional(),
+});
 type ThreadTriggerContext = NonNullable<
   NonNullable<TypeMessageEvent["context"]>["thread"]
 >;
+
+function resolveDownloadUrl(
+  file: InboundFileWithDownloadUrl,
+): string | undefined {
+  const resolvedUrl = file.url ?? file.downloadUrl;
+  if (typeof resolvedUrl !== "string" || resolvedUrl.length === 0) {
+    return undefined;
+  }
+  return resolvedUrl;
+}
 
 function trackSession(messageId: string, session: StreamSession): void {
   const existing = sessionsByMessageId.get(messageId);
@@ -249,6 +278,27 @@ function buildUntrustedContextBlocks(msg: TypeMessageEvent): string[] {
     );
   }
 
+  const files = msg.files;
+  if (files && files.length > 0) {
+    blocks.push(
+      [
+        "Attached files (untrusted):",
+        "```json",
+        JSON.stringify(
+          files.map((f) => ({
+            id: f.id,
+            filename: f.filename,
+            mimeType: f.mimeType,
+            sizeBytes: f.sizeBytes,
+          })),
+          null,
+          2,
+        ),
+        "```",
+      ].join("\n"),
+    );
+  }
+
   return blocks;
 }
 
@@ -256,10 +306,15 @@ function buildBodyForAgent(params: {
   messageBody: string;
   inboundHistory: Array<{ sender: string; body: string; timestamp?: number }>;
   threadContext: ThreadTriggerContext | null | undefined;
+  files: InboundFileWithDownloadUrl[] | undefined;
 }): string {
-  const { messageBody, inboundHistory, threadContext } = params;
+  const { messageBody, inboundHistory, threadContext, files } = params;
 
-  if (inboundHistory.length === 0 && !threadContext?.threadTitle) {
+  if (
+    inboundHistory.length === 0 &&
+    !threadContext?.threadTitle &&
+    (!files || files.length === 0)
+  ) {
     return messageBody;
   }
 
@@ -276,8 +331,111 @@ function buildBodyForAgent(params: {
     sections.push(["Conversation history:", ...historyLines].join("\n"));
   }
 
+  if (files && files.length > 0) {
+    const fileLines = files.map((file) => {
+      const resolvedUrl = resolveDownloadUrl(file);
+      return `- ${file.filename} (id: ${file.id}, type: ${file.mimeType}, sizeBytes: ${file.sizeBytes}${resolvedUrl ? `, url: ${resolvedUrl}` : ""})`;
+    });
+    sections.push(["Attached files:", ...fileLines].join("\n"));
+  }
+
   sections.push(`Current message: ${messageBody}`);
   return sections.join("\n\n");
+}
+
+async function resolveFileDownloadUrls(params: {
+  files: InboundFile[];
+  account: TypeInboundAccountContext;
+  log?: Logger;
+}): Promise<InboundFileWithDownloadUrl[]> {
+  const { files, account, log } = params;
+
+  if (files.length === 0) {
+    return [];
+  }
+
+  const apiOrigin = resolveApiOriginFromWsUrl(account.wsUrl);
+  if (!apiOrigin || !account.agentId || !account.token) {
+    return files;
+  }
+
+  const endpoint = `${apiOrigin}/api/agents/${encodeURIComponent(account.agentId)}/files/download-url`;
+
+  return Promise.all(
+    files.map(async (file) => {
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          signal: AbortSignal.timeout(FILE_URL_FETCH_TIMEOUT_MS),
+          headers: {
+            Authorization: `Bearer ${account.token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ fileId: file.id }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const payloadParse = downloadUrlResponseSchema.safeParse(
+          await response.json(),
+        );
+        if (!payloadParse.success) {
+          throw new Error("Invalid download URL response payload");
+        }
+
+        if (payloadParse.data.downloadUrl) {
+          return {
+            ...file,
+            downloadUrl: payloadParse.data.downloadUrl,
+            url: payloadParse.data.downloadUrl,
+          };
+        }
+      } catch (err) {
+        log?.error(
+          `[type] Failed to resolve download URL for ${file.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      return file;
+    }),
+  );
+}
+
+function buildMediaContextFields(
+  files: InboundFileWithDownloadUrl[] | undefined,
+): {
+  MediaUrls?: string[];
+  MediaUrl?: string;
+  MediaTypes?: string[];
+  MediaType?: string;
+} {
+  if (!files || files.length === 0) {
+    return {};
+  }
+
+  const withDownloadUrl = files
+    .map((file) => ({ file, resolvedUrl: resolveDownloadUrl(file) }))
+    .filter(
+      (
+        entry,
+      ): entry is { file: InboundFileWithDownloadUrl; resolvedUrl: string } =>
+        typeof entry.resolvedUrl === "string" && entry.resolvedUrl.length > 0,
+    );
+  if (withDownloadUrl.length === 0) {
+    return {};
+  }
+
+  const mediaUrls = withDownloadUrl.map((entry) => entry.resolvedUrl);
+  const mediaTypes = withDownloadUrl.map((entry) => entry.file.mimeType);
+
+  return {
+    MediaUrls: mediaUrls,
+    MediaUrl: mediaUrls[0],
+    MediaTypes: mediaTypes,
+    MediaType: mediaTypes[0],
+  };
 }
 
 /**
@@ -356,140 +514,241 @@ function resolveAgentFromBindings(
 export function handleInboundMessage(params: {
   msg: TypeMessageEvent;
   accountId: string;
+  account?: TypeInboundAccountContext;
   cfg: Record<string, unknown>;
   runtime: PluginRuntime;
   outbound: StreamOutbound;
   log?: Logger;
 }): void {
-  const { msg, accountId, cfg, runtime, outbound, log } = params;
+  const { msg, accountId, account, cfg, runtime, outbound, log } = params;
 
   log?.info(
     `[type] Inbound message from ${msg.sender?.name ?? "unknown"} in ${msg.channelName ?? msg.channelId}`,
   );
 
-  try {
-    const senderId = msg.sender?.id ?? "unknown";
-    const senderName = msg.sender?.name ?? "Unknown";
-    const messageBody = msg.content ?? "";
-    const inboundHistory = buildInboundHistory(msg);
-    const untrustedContext = buildUntrustedContextBlocks(msg);
-    const threadContext = msg.context?.thread;
-    const channelContext = msg.context?.channel;
-    const bodyForAgent = buildBodyForAgent({
-      messageBody,
-      inboundHistory,
-      threadContext,
-    });
+  const inboundFiles = msg.files ? [...msg.files] : undefined;
 
-    log?.info(
-      `[type] Trigger context summary: threadMessages=${threadContext?.messages.length ?? 0}, recentMessages=${msg.context?.recentMessages?.length ?? 0}`,
-    );
-
-    const agentId = resolveAgentFromBindings(cfg, "type") ?? "main";
-
-    const ctxPayload = runtime.channel.reply.finalizeInboundContext({
-      Body: bodyForAgent,
-      BodyForAgent: bodyForAgent,
-      BodyForCommands: messageBody,
-      RawBody: messageBody,
-      CommandBody: messageBody,
-      CommandAuthorized: true,
-      From: `type:${senderId}`,
-      To: `type:${accountId}`,
-      SessionKey: (() => {
-        switch (msg.chatType) {
-          case "thread":
-            return msg.parentMessageId
-              ? `agent:${agentId}:type:${msg.parentMessageId}`
-              : `agent:${agentId}:type:${msg.channelId}:${msg.messageId}`;
-          case "dm":
-            return `agent:${agentId}:type:${msg.channelId}`;
-          default:
-            return `agent:${agentId}:type:${msg.channelId}:${msg.messageId}`;
-        }
-      })(),
-      AccountId: accountId,
-      ChatType: msg.chatType,
-      ConversationLabel: msg.channelName ?? msg.channelId,
-      GroupChannel: channelContext?.name ?? msg.channelName ?? msg.channelId,
-      GroupSubject: channelContext?.description ?? null,
-      SenderName: senderName,
-      SenderId: senderId,
-      ThreadLabel: threadContext?.threadTitle ?? null,
-      InboundHistory: inboundHistory.length > 0 ? inboundHistory : undefined,
-      UntrustedContext:
-        untrustedContext.length > 0 ? untrustedContext : undefined,
-      Provider: "type",
-      Surface: "type",
-      MessageSid: msg.messageId,
-      Timestamp: msg.timestamp,
-      TypeTriggerContext: msg.context ?? null,
-    });
-
-    const session = new StreamSession(outbound, msg.messageId);
-    trackSession(msg.messageId, session);
-
-    void runtime.channel.reply
-      .dispatchReplyWithBufferedBlockDispatcher({
-        ctx: ctxPayload,
-        cfg,
-        dispatcherOptions: {
-          deliver: async (
-            payload: { text?: string },
-            info: Record<string, unknown>,
-          ) => {
-            // Handle tool results as native tool-call + tool-result stream
-            // events so they render as collapsible cards in Type's UI.
-            if (info.kind === "tool") {
-              if (session.isFailed) return;
-              if (payload.text) {
-                const [toolCall, toolResult] = createToolEvents(payload.text);
-                session.sendToolEvent(toolCall);
-                session.sendToolEvent(toolResult);
-              }
-              session.resetTextAccumulator();
-              if (session.isStarted && !session.isFailed) {
-                markSessionAwaitingAck(msg.messageId);
-              }
-            }
-            // Other kinds (block, final) are no-op — onPartialReply handles text
-          },
-          onSkip: (_payload, info) => {
-            console.log(`[type] Reply skipped: ${JSON.stringify(info)}`);
-          },
-          onError: (err, info) => {
-            console.error(`[type] Reply error: ${err} ${JSON.stringify(info)}`);
-          },
-        },
-        replyOptions: {
-          disableBlockStreaming: true,
-          onPartialReply: (payload: { text?: string }) => {
-            if (!payload.text || session.isFailed) return;
-            session.sendToken(payload.text);
-            if (session.isStarted) {
-              markSessionAwaitingAck(msg.messageId);
-            }
-          },
-        },
-      })
-      .then(() => {
-        if (session.isStarted) {
-          session.finish();
-        }
-        markSessionDispatchComplete(msg.messageId);
-      })
-      .catch((err: unknown) => {
-        console.error(
-          `[type] Stream dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-        if (session.isStarted) {
-          session.finish();
-        }
-        markSessionDispatchComplete(msg.messageId);
+  const dispatchWithResolvedFiles = (
+    resolvedFiles: InboundFileWithDownloadUrl[] | undefined,
+  ): void => {
+    try {
+      const effectiveFiles: InboundFileWithDownloadUrl[] | undefined =
+        resolvedFiles ?? inboundFiles;
+      const mediaContextFields = buildMediaContextFields(effectiveFiles);
+      const normalizedFiles = (effectiveFiles ?? []).map((file) => ({
+        ...file,
+        url: file.url ?? file.downloadUrl,
+      }));
+      const senderId = msg.sender?.id ?? "unknown";
+      const senderName = msg.sender?.name ?? "Unknown";
+      const messageBody = msg.content ?? "";
+      const inboundHistory = buildInboundHistory(msg);
+      const untrustedContext = buildUntrustedContextBlocks(msg);
+      const threadContext = msg.context?.thread;
+      const channelContext = msg.context?.channel;
+      const bodyForAgent = buildBodyForAgent({
+        messageBody,
+        inboundHistory,
+        threadContext,
+        files: effectiveFiles,
       });
-  } catch (err) {
-    log?.error(
-      `[type] Message dispatch error: ${err instanceof Error ? err.message : String(err)}`,
-    );
+
+      log?.info(
+        `[type] Trigger context summary: threadMessages=${threadContext?.messages.length ?? 0}, recentMessages=${msg.context?.recentMessages?.length ?? 0}`,
+      );
+
+      const agentId = resolveAgentFromBindings(cfg, "type") ?? "main";
+
+      const ctxPayload = runtime.channel.reply.finalizeInboundContext({
+        Body: bodyForAgent,
+        BodyForAgent: bodyForAgent,
+        BodyForCommands: messageBody,
+        RawBody: messageBody,
+        CommandBody: messageBody,
+        CommandAuthorized: true,
+        From: `type:${senderId}`,
+        // Use the concrete conversation id so "message send" can infer a valid
+        // reply target for this channel/thread.
+        To: msg.channelId,
+        SessionKey: (() => {
+          switch (msg.chatType) {
+            case "thread":
+              return msg.parentMessageId
+                ? `agent:${agentId}:type:${msg.parentMessageId}`
+                : `agent:${agentId}:type:${msg.channelId}:${msg.messageId}`;
+            case "dm":
+              return `agent:${agentId}:type:${msg.channelId}`;
+            default:
+              return `agent:${agentId}:type:${msg.channelId}:${msg.messageId}`;
+          }
+        })(),
+        AccountId: accountId,
+        ChatType: msg.chatType,
+        ConversationLabel: msg.channelName ?? msg.channelId,
+        GroupChannel: channelContext?.name ?? msg.channelName ?? msg.channelId,
+        GroupSubject: channelContext?.description ?? null,
+        SenderName: senderName,
+        SenderId: senderId,
+        ThreadLabel: threadContext?.threadTitle ?? null,
+        InboundHistory: inboundHistory.length > 0 ? inboundHistory : undefined,
+        UntrustedContext:
+          untrustedContext.length > 0 ? untrustedContext : undefined,
+        Files: normalizedFiles,
+        ...mediaContextFields,
+        Provider: "type",
+        Surface: "type",
+        MessageSid: msg.messageId,
+        Timestamp: msg.timestamp,
+        TypeTriggerContext: msg.context ?? null,
+      });
+
+      const session = new StreamSession(outbound, msg.messageId);
+      trackSession(msg.messageId, session);
+      let pendingNoReplyCandidateText: string | null = null;
+      let noReplySuppressed = false;
+      let sawToolEvent = false;
+
+      const getEffectiveNoReplySentinels = (): readonly string[] =>
+        sawToolEvent
+          ? [NO_REPLY_SENTINEL, NO_REPLY_SHORT_SENTINEL]
+          : [NO_REPLY_SENTINEL];
+
+      const sendPartialReplyText = (text: string, isFinalAttempt: boolean) => {
+        if (session.isFailed || noReplySuppressed) return;
+        const trimmed = text.trim();
+        if (trimmed.length === 0) return;
+
+        const pendingCandidate = pendingNoReplyCandidateText;
+        const candidateText = pendingCandidate
+          ? text.startsWith(pendingCandidate)
+            ? text
+            : `${pendingCandidate}${text}`
+          : text;
+        const upperTrimmed = candidateText.trim().toUpperCase();
+        const effectiveSentinels = getEffectiveNoReplySentinels();
+        if (effectiveSentinels.includes(upperTrimmed)) {
+          // Sentinel used by OpenClaw to suppress a follow-up assistant message
+          // after a direct tool-send. Never forward this text to Type.
+          noReplySuppressed = true;
+          pendingNoReplyCandidateText = null;
+          return;
+        }
+
+        const isPossibleSentinelPrefix = effectiveSentinels.some((sentinel) =>
+          sentinel.startsWith(upperTrimmed),
+        );
+        if (isPossibleSentinelPrefix) {
+          pendingNoReplyCandidateText = candidateText;
+          if (!isFinalAttempt) {
+            return;
+          }
+        } else {
+          pendingNoReplyCandidateText = null;
+        }
+
+        session.sendToken(candidateText);
+        if (session.isStarted) {
+          markSessionAwaitingAck(msg.messageId);
+        }
+      };
+
+      const flushPendingNoReplyCandidate = () => {
+        if (!pendingNoReplyCandidateText || noReplySuppressed) return;
+        const pendingText = pendingNoReplyCandidateText;
+        pendingNoReplyCandidateText = null;
+        sendPartialReplyText(pendingText, true);
+      };
+
+      void runtime.channel.reply
+        .dispatchReplyWithBufferedBlockDispatcher({
+          ctx: ctxPayload,
+          cfg,
+          dispatcherOptions: {
+            deliver: async (
+              payload: { text?: string },
+              info: Record<string, unknown>,
+            ) => {
+              // Handle tool results as native tool-call + tool-result stream
+              // events so they render as collapsible cards in Type's UI.
+              if (info.kind === "tool") {
+                sawToolEvent = true;
+                if (session.isFailed) return;
+                if (payload.text) {
+                  const [toolCall, toolResult] = createToolEvents(payload.text);
+                  session.sendToolEvent(toolCall);
+                  session.sendToolEvent(toolResult);
+                }
+                session.resetTextAccumulator();
+                if (session.isStarted && !session.isFailed) {
+                  markSessionAwaitingAck(msg.messageId);
+                }
+              }
+              // Other kinds (block, final) are no-op — onPartialReply handles text
+            },
+            onSkip: (_payload, info) => {
+              console.log(`[type] Reply skipped: ${JSON.stringify(info)}`);
+            },
+            onError: (err, info) => {
+              console.error(
+                `[type] Reply error: ${err} ${JSON.stringify(info)}`,
+              );
+            },
+          },
+          replyOptions: {
+            disableBlockStreaming: true,
+            onPartialReply: (payload: { text?: string }) => {
+              if (!payload.text || session.isFailed) return;
+              sendPartialReplyText(payload.text, false);
+            },
+          },
+        })
+        .then(() => {
+          flushPendingNoReplyCandidate();
+          if (session.isStarted) {
+            session.finish();
+          }
+          markSessionDispatchComplete(msg.messageId);
+        })
+        .catch((err: unknown) => {
+          console.error(
+            `[type] Stream dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          flushPendingNoReplyCandidate();
+          if (session.isStarted) {
+            session.finish();
+          }
+          markSessionDispatchComplete(msg.messageId);
+        });
+    } catch (err) {
+      log?.error(
+        `[type] Message dispatch error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+
+  if (
+    inboundFiles &&
+    inboundFiles.length > 0 &&
+    account?.token &&
+    account.wsUrl &&
+    account.agentId
+  ) {
+    void resolveFileDownloadUrls({
+      files: inboundFiles,
+      account,
+      log,
+    })
+      .then((resolvedFiles) => {
+        dispatchWithResolvedFiles(resolvedFiles);
+      })
+      .catch((err) => {
+        log?.error(
+          `[type] File download URL resolution failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        dispatchWithResolvedFiles(inboundFiles);
+      });
+    return;
   }
+
+  dispatchWithResolvedFiles(inboundFiles);
 }

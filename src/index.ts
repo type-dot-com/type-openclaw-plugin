@@ -9,9 +9,15 @@
  * inbound messages through the standard OpenClaw agent pipeline.
  */
 
+import path from "node:path";
 import { fetchChannelsCached, resolveChannelId } from "./channels.js";
-import { listAccountIds, resolveAccount } from "./config.js";
+import {
+  DEFAULT_TYPE_WS_URL,
+  listAccountIds,
+  resolveAccount,
+} from "./config.js";
 import { TypeConnection } from "./connection.js";
+import { uploadMediaForType } from "./mediaUpload.js";
 import {
   handleInboundMessage,
   type PluginRuntime,
@@ -19,13 +25,73 @@ import {
   resolveStreamAck,
 } from "./messageHandler.js";
 import { TypeOutboundHandler } from "./outbound.js";
+import {
+  isLikelyTypeTargetId,
+  normalizeTypeTarget,
+} from "./targetNormalization.js";
 
 // Module-level runtime reference (set during register, used in gateway)
 let pluginRuntime: PluginRuntime | null = null;
 let _activeConnection: TypeConnection | null = null;
 let activeOutbound: TypeOutboundHandler | null = null;
+let activeAccountContext: {
+  token: string;
+  wsUrl: string;
+  agentId: string;
+} | null = null;
 let connectionState: "disconnected" | "connecting" | "connected" =
   "disconnected";
+
+function isPathWithinRoot(candidatePath: string, rootPath: string): boolean {
+  const relative = path.relative(rootPath, candidatePath);
+  return (
+    relative === "" ||
+    (!relative.startsWith("..") && !path.isAbsolute(relative))
+  );
+}
+
+function resolveEffectiveMediaLocalRoots(params: {
+  configuredRoots: readonly string[];
+  requestedRoots?: readonly string[];
+}): readonly string[] | undefined {
+  const normalizeRoots = (roots: readonly string[]): string[] =>
+    Array.from(new Set(roots.map((root) => path.resolve(root))));
+
+  const configuredRoots =
+    params.configuredRoots.length > 0
+      ? normalizeRoots(params.configuredRoots)
+      : [];
+  const requestedRoots =
+    params.requestedRoots && params.requestedRoots.length > 0
+      ? normalizeRoots(params.requestedRoots)
+      : [];
+
+  if (configuredRoots.length === 0) {
+    return requestedRoots.length > 0 ? requestedRoots : undefined;
+  }
+  if (requestedRoots.length === 0) {
+    return configuredRoots;
+  }
+
+  const intersection = new Set<string>();
+  for (const configuredRoot of configuredRoots) {
+    for (const requestedRoot of requestedRoots) {
+      if (isPathWithinRoot(configuredRoot, requestedRoot)) {
+        intersection.add(configuredRoot);
+      } else if (isPathWithinRoot(requestedRoot, configuredRoot)) {
+        intersection.add(requestedRoot);
+      }
+    }
+  }
+
+  if (intersection.size === 0) {
+    throw new Error(
+      "Requested mediaLocalRoots do not overlap with configured channels.type.mediaLocalRoots",
+    );
+  }
+
+  return Array.from(intersection);
+}
 
 const typePlugin = {
   id: "type",
@@ -39,7 +105,7 @@ const typePlugin = {
 
   capabilities: {
     chatTypes: ["direct", "channel", "thread"] satisfies readonly string[],
-    media: false,
+    media: true,
     reactions: false,
     threads: true,
   },
@@ -134,9 +200,12 @@ const typePlugin = {
       const byId = new Map(channels.map((ch) => [ch.id, ch]));
 
       return inputs.map((input) => {
-        const normalized = input.startsWith("#") ? input.slice(1) : input;
+        const normalizedInput = normalizeTypeTarget(input);
+        const normalized = normalizedInput.startsWith("#")
+          ? normalizedInput.slice(1)
+          : normalizedInput;
         const match =
-          byId.get(input) ??
+          byId.get(normalizedInput) ??
           channels.find(
             (ch) => ch.name.toLowerCase() === normalized.toLowerCase(),
           );
@@ -149,6 +218,15 @@ const typePlugin = {
           kind: "group" as const,
         };
       });
+    },
+  },
+
+  messaging: {
+    normalizeTarget: (raw: string): string => normalizeTypeTarget(raw),
+    targetResolver: {
+      hint: "Use a Type target id (for example `ch_*` or `agsess_*`).",
+      looksLikeId: (raw: string, normalized: string): boolean =>
+        isLikelyTypeTargetId(raw) || isLikelyTypeTargetId(normalized),
     },
   },
 
@@ -165,10 +243,11 @@ const typePlugin = {
       accountId?: string | null;
       mode?: string;
     }): { ok: true; to: string } | { ok: false; error: string } => {
-      if (!to) {
+      const normalizedTo = to ? normalizeTypeTarget(to) : "";
+      if (!normalizedTo) {
         return { ok: false, error: "Target channel ID is required" };
       }
-      return { ok: true, to };
+      return { ok: true, to: normalizedTo };
     },
 
     sendText: async ({
@@ -209,6 +288,7 @@ const typePlugin = {
       to,
       text,
       mediaUrl,
+      mediaLocalRoots,
       replyToId,
       cfg,
       accountId,
@@ -216,6 +296,7 @@ const typePlugin = {
       to: string;
       text: string;
       mediaUrl: string;
+      mediaLocalRoots?: readonly string[];
       replyToId?: string;
       cfg?: Record<string, unknown>;
       accountId?: string | null;
@@ -227,9 +308,32 @@ const typePlugin = {
       }
       try {
         const account = resolveAccount(cfg ?? {}, accountId ?? undefined);
+        const resolvedWsUrl =
+          account.wsUrl === DEFAULT_TYPE_WS_URL && activeAccountContext?.wsUrl
+            ? activeAccountContext.wsUrl
+            : account.wsUrl;
+        const uploadAccount = {
+          token: account.token || activeAccountContext?.token || "",
+          wsUrl: resolvedWsUrl,
+          agentId: account.agentId || activeAccountContext?.agentId || "",
+        };
+        const effectiveMediaLocalRoots = resolveEffectiveMediaLocalRoots({
+          configuredRoots: account.mediaLocalRoots,
+          requestedRoots: mediaLocalRoots,
+        });
         const channelId = await resolveChannelId(to, account);
-        const caption = text || `[Media: ${mediaUrl}]`;
-        const sent = activeOutbound.sendMessage(channelId, caption, replyToId);
+
+        const uploadedMedia = await uploadMediaForType({
+          mediaUrl,
+          mediaLocalRoots: effectiveMediaLocalRoots,
+          channelId,
+          account: uploadAccount,
+        });
+
+        const caption = text.trim().length > 0 ? text : "Sent an attachment.";
+        const sent = activeOutbound.sendMessage(channelId, caption, replyToId, [
+          uploadedMedia.fileId,
+        ]);
         if (!sent) {
           return { ok: false, error: "Failed to send message" };
         }
@@ -261,8 +365,11 @@ const typePlugin = {
       connectionState = "connecting";
 
       const runtime = pluginRuntime ?? ctx.runtime;
-      const { token, wsUrl } = ctx.account;
       const accountId = ctx.accountId;
+      const accountConfig = resolveAccount(ctx.cfg, accountId ?? undefined);
+      const token = ctx.account.token || accountConfig.token;
+      const wsUrl = ctx.account.wsUrl || accountConfig.wsUrl;
+      const agentId = accountConfig.agentId;
 
       const connection = new TypeConnection({
         token,
@@ -306,6 +413,7 @@ const typePlugin = {
           handleInboundMessage({
             msg: event,
             accountId,
+            account: { token, wsUrl, agentId },
             cfg: ctx.cfg,
             runtime,
             outbound: activeOutbound,
@@ -324,6 +432,7 @@ const typePlugin = {
 
       _activeConnection = connection;
       activeOutbound = new TypeOutboundHandler(connection);
+      activeAccountContext = { token, wsUrl, agentId };
 
       connection.connect();
 
@@ -333,6 +442,7 @@ const typePlugin = {
           connection.disconnect();
           _activeConnection = null;
           activeOutbound = null;
+          activeAccountContext = null;
           resolve();
         });
       });

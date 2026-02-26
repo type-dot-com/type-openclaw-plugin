@@ -30,6 +30,7 @@ function createMessage(
     channelId: "ch_1",
     channelName: "general",
     parentMessageId: null,
+    chatType: "channel",
     sender: { id: "user_1", name: "User" },
     content: "hello",
     mentionsAgent: true,
@@ -198,6 +199,247 @@ describe("messageHandler stream ack routing", () => {
     ]);
   });
 
+  test("suppresses NO_REPLY sentinel text from being streamed", async () => {
+    const started: string[] = [];
+    const tokenChunks: string[] = [];
+    const finished: string[] = [];
+
+    const outbound: StreamOutbound = {
+      startStream(messageId: string): boolean {
+        started.push(messageId);
+        return true;
+      },
+      streamToken(_messageId: string, text: string): boolean {
+        tokenChunks.push(text);
+        return true;
+      },
+      streamEvent(): boolean {
+        return true;
+      },
+      finishStream(messageId: string): boolean {
+        finished.push(messageId);
+        return true;
+      },
+    };
+
+    const runtime: PluginRuntime = {
+      channel: {
+        reply: {
+          finalizeInboundContext(
+            ctx: Record<string, unknown>,
+          ): Record<string, unknown> {
+            return ctx;
+          },
+          dispatchReplyWithBufferedBlockDispatcher(opts): Promise<void> {
+            if (hasOnPartialReply(opts.replyOptions)) {
+              opts.replyOptions.onPartialReply({ text: "NO_REPLY" });
+            }
+            return Promise.resolve();
+          },
+        },
+      },
+    };
+
+    handleInboundMessage({
+      msg: createMessage("msg_no_reply"),
+      accountId: "acct_1",
+      cfg: {},
+      runtime,
+      outbound,
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(started).toEqual([]);
+    expect(tokenChunks).toEqual([]);
+    expect(finished).toEqual([]);
+  });
+
+  test("suppresses short NO sentinel when a tool event was emitted", async () => {
+    const started: string[] = [];
+    const tokenChunks: string[] = [];
+    const finished: string[] = [];
+
+    const outbound: StreamOutbound = {
+      startStream(messageId: string): boolean {
+        started.push(messageId);
+        return true;
+      },
+      streamToken(_messageId: string, text: string): boolean {
+        tokenChunks.push(text);
+        return true;
+      },
+      streamEvent(): boolean {
+        return true;
+      },
+      finishStream(messageId: string): boolean {
+        finished.push(messageId);
+        return true;
+      },
+    };
+
+    const runtime: PluginRuntime = {
+      channel: {
+        reply: {
+          finalizeInboundContext(
+            ctx: Record<string, unknown>,
+          ): Record<string, unknown> {
+            return ctx;
+          },
+          async dispatchReplyWithBufferedBlockDispatcher(opts): Promise<void> {
+            await opts.dispatcherOptions.deliver({}, {
+              kind: "tool",
+            } as Record<string, unknown>);
+            if (hasOnPartialReply(opts.replyOptions)) {
+              opts.replyOptions.onPartialReply({ text: "NO" });
+            }
+          },
+        },
+      },
+    };
+
+    handleInboundMessage({
+      msg: createMessage("msg_no_with_tool"),
+      accountId: "acct_1",
+      cfg: {},
+      runtime,
+      outbound,
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(started).toEqual([]);
+    expect(tokenChunks).toEqual([]);
+    expect(finished).toEqual([]);
+  });
+
+  test("preserves buffered NO_REPLY prefix when partials are split across chunks", async () => {
+    const calls: Array<{ kind: "start" | "token" | "finish"; value: string }> =
+      [];
+
+    const outbound: StreamOutbound = {
+      startStream(messageId: string): boolean {
+        calls.push({ kind: "start", value: messageId });
+        return true;
+      },
+      streamToken(messageId: string, text: string): boolean {
+        calls.push({ kind: "token", value: `${messageId}:${text}` });
+        return true;
+      },
+      streamEvent(): boolean {
+        return true;
+      },
+      finishStream(messageId: string): boolean {
+        calls.push({ kind: "finish", value: messageId });
+        return true;
+      },
+    };
+
+    const runtime: PluginRuntime = {
+      channel: {
+        reply: {
+          finalizeInboundContext(
+            ctx: Record<string, unknown>,
+          ): Record<string, unknown> {
+            return ctx;
+          },
+          dispatchReplyWithBufferedBlockDispatcher(opts): Promise<void> {
+            if (hasOnPartialReply(opts.replyOptions)) {
+              opts.replyOptions.onPartialReply({ text: "N" });
+              opts.replyOptions.onPartialReply({ text: "ot now" });
+            }
+            return Promise.resolve();
+          },
+        },
+      },
+    };
+
+    handleInboundMessage({
+      msg: createMessage("msg_split_sentinel"),
+      accountId: "acct_1",
+      cfg: {},
+      runtime,
+      outbound,
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(calls).toEqual([{ kind: "start", value: "msg_split_sentinel" }]);
+
+    resolveStreamAck("msg_split_sentinel");
+
+    expect(calls).toEqual([
+      { kind: "start", value: "msg_split_sentinel" },
+      { kind: "token", value: "msg_split_sentinel:Not now" },
+      { kind: "finish", value: "msg_split_sentinel" },
+    ]);
+  });
+
+  test("does not suppress legitimate short replies that start with NO", async () => {
+    const calls: Array<{ kind: "start" | "token" | "finish"; value: string }> =
+      [];
+
+    const outbound: StreamOutbound = {
+      startStream(messageId: string): boolean {
+        calls.push({ kind: "start", value: messageId });
+        return true;
+      },
+      streamToken(messageId: string, text: string): boolean {
+        calls.push({ kind: "token", value: `${messageId}:${text}` });
+        return true;
+      },
+      streamEvent(): boolean {
+        return true;
+      },
+      finishStream(messageId: string): boolean {
+        calls.push({ kind: "finish", value: messageId });
+        return true;
+      },
+    };
+
+    const runtime: PluginRuntime = {
+      channel: {
+        reply: {
+          finalizeInboundContext(
+            ctx: Record<string, unknown>,
+          ): Record<string, unknown> {
+            return ctx;
+          },
+          dispatchReplyWithBufferedBlockDispatcher(opts): Promise<void> {
+            if (hasOnPartialReply(opts.replyOptions)) {
+              opts.replyOptions.onPartialReply({ text: "NO" });
+            }
+            return Promise.resolve();
+          },
+        },
+      },
+    };
+
+    handleInboundMessage({
+      msg: createMessage("msg_legit_no"),
+      accountId: "acct_1",
+      cfg: {},
+      runtime,
+      outbound,
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(calls).toEqual([{ kind: "start", value: "msg_legit_no" }]);
+
+    resolveStreamAck("msg_legit_no");
+
+    expect(calls).toEqual([
+      { kind: "start", value: "msg_legit_no" },
+      { kind: "token", value: "msg_legit_no:NO" },
+      { kind: "finish", value: "msg_legit_no" },
+    ]);
+  });
+
   test("embeds thread history in BodyForAgent while preserving RawBody", async () => {
     let capturedContext: Record<string, unknown> | null = null;
 
@@ -233,6 +475,7 @@ describe("messageHandler stream ack routing", () => {
     };
 
     const message = createMessage("msg_ctx", {
+      chatType: "thread",
       content: "Please summarize this thread.",
       parentMessageId: "msg_parent",
       context: {
@@ -312,6 +555,7 @@ describe("messageHandler stream ack routing", () => {
     expect(capturedContext.RawBody).toBe("Please summarize this thread.");
     expect(capturedContext.CommandBody).toBe("Please summarize this thread.");
     expect(capturedContext.ChatType).toBe("thread");
+    expect(capturedContext.To).toBe("ch_1");
     expect(capturedContext.BodyForAgent).toBe(bodyValue);
     expect(capturedContext.BodyForCommands).toBe(
       "Please summarize this thread.",
@@ -362,5 +606,193 @@ describe("messageHandler stream ack routing", () => {
     );
 
     expect(capturedContext.TypeTriggerContext).toEqual(message.context);
+  });
+
+  test("includes attached files in BodyForAgent", async () => {
+    let capturedContext: Record<string, unknown> | null = null;
+
+    const outbound: StreamOutbound = {
+      startStream(): boolean {
+        return true;
+      },
+      streamToken(): boolean {
+        return true;
+      },
+      streamEvent(): boolean {
+        return true;
+      },
+      finishStream(): boolean {
+        return true;
+      },
+    };
+
+    const runtime: PluginRuntime = {
+      channel: {
+        reply: {
+          finalizeInboundContext(
+            ctx: Record<string, unknown>,
+          ): Record<string, unknown> {
+            capturedContext = ctx;
+            return ctx;
+          },
+          dispatchReplyWithBufferedBlockDispatcher(): Promise<void> {
+            return Promise.resolve();
+          },
+        },
+      },
+    };
+
+    handleInboundMessage({
+      msg: createMessage("msg_with_file", {
+        content: "can you see this image",
+        files: [
+          {
+            id: "file_123",
+            filename: "screenshot.png",
+            mimeType: "image/png",
+            sizeBytes: 1024,
+          },
+        ],
+      }),
+      accountId: "acct_1",
+      cfg: {},
+      runtime,
+      outbound,
+    });
+
+    expect(capturedContext).not.toBeNull();
+    if (!capturedContext) {
+      return;
+    }
+
+    const bodyValue = capturedContext.Body;
+    expect(typeof bodyValue).toBe("string");
+    if (typeof bodyValue !== "string") {
+      return;
+    }
+
+    expect(bodyValue).toContain("Attached files:");
+    expect(bodyValue).toContain(
+      "- screenshot.png (id: file_123, type: image/png, sizeBytes: 1024)",
+    );
+    expect(bodyValue).toContain("Current message: can you see this image");
+    expect(capturedContext.BodyForAgent).toBe(bodyValue);
+    expect(capturedContext.RawBody).toBe("can you see this image");
+  });
+
+  test("resolves inbound file IDs into MediaUrls when account config is present", async () => {
+    let capturedContext: Record<string, unknown> | null = null;
+    const fetchCalls: string[] = [];
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+      fetchCalls.push(String(input));
+      return new Response(
+        JSON.stringify({
+          downloadUrl: "https://files.example.com/signed-image.png",
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }) as typeof fetch;
+
+    const outbound: StreamOutbound = {
+      startStream(): boolean {
+        return true;
+      },
+      streamToken(): boolean {
+        return true;
+      },
+      streamEvent(): boolean {
+        return true;
+      },
+      finishStream(): boolean {
+        return true;
+      },
+    };
+
+    const runtime: PluginRuntime = {
+      channel: {
+        reply: {
+          finalizeInboundContext(
+            ctx: Record<string, unknown>,
+          ): Record<string, unknown> {
+            capturedContext = ctx;
+            return ctx;
+          },
+          dispatchReplyWithBufferedBlockDispatcher(): Promise<void> {
+            return Promise.resolve();
+          },
+        },
+      },
+    };
+
+    try {
+      handleInboundMessage({
+        msg: createMessage("msg_with_file_url", {
+          content: "can you inspect this image",
+          files: [
+            {
+              id: "file_456",
+              filename: "example.png",
+              mimeType: "image/png",
+              sizeBytes: 2048,
+            },
+          ],
+        }),
+        accountId: "acct_1",
+        account: {
+          token: "ta_test_token",
+          wsUrl: "wss://type.example.com/api/agents/ws",
+          agentId: "agent_123",
+        },
+        cfg: {},
+        runtime,
+        outbound,
+      });
+
+      for (let i = 0; i < 8 && !capturedContext; i += 1) {
+        await Promise.resolve();
+      }
+
+      expect(fetchCalls).toEqual([
+        "https://type.example.com/api/agents/agent_123/files/download-url",
+      ]);
+      expect(capturedContext).not.toBeNull();
+      if (!capturedContext) {
+        return;
+      }
+
+      expect(capturedContext.MediaUrl).toBe(
+        "https://files.example.com/signed-image.png",
+      );
+      expect(capturedContext.MediaUrls).toEqual([
+        "https://files.example.com/signed-image.png",
+      ]);
+      expect(capturedContext.MediaType).toBe("image/png");
+      expect(capturedContext.MediaTypes).toEqual(["image/png"]);
+      expect(capturedContext.Files).toEqual([
+        {
+          id: "file_456",
+          filename: "example.png",
+          mimeType: "image/png",
+          sizeBytes: 2048,
+          downloadUrl: "https://files.example.com/signed-image.png",
+          url: "https://files.example.com/signed-image.png",
+        },
+      ]);
+      const bodyForAgent = capturedContext.BodyForAgent;
+      expect(typeof bodyForAgent).toBe("string");
+      if (typeof bodyForAgent !== "string") {
+        return;
+      }
+      expect(bodyForAgent).toContain(
+        "url: https://files.example.com/signed-image.png",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

@@ -1,5 +1,9 @@
 import { z } from "zod";
 import type { TypeAccountConfig } from "./config.js";
+import {
+  isLikelyTypeTargetId,
+  normalizeTypeTarget,
+} from "./targetNormalization.js";
 
 const FETCH_TIMEOUT_MS = 10_000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -73,11 +77,16 @@ export async function resolveChannelId(
   to: string,
   account: TypeAccountConfig,
 ): Promise<string> {
-  if (!account.token || to.startsWith("ch_")) return to;
+  const normalizedTarget = normalizeTypeTarget(to);
+  if (!account.token || isLikelyTypeTargetId(normalizedTarget)) {
+    return normalizedTarget;
+  }
   const channels = await fetchChannelsCached(account);
-  const normalized = to.startsWith("#") ? to.slice(1) : to;
+  const normalized = normalizedTarget.startsWith("#")
+    ? normalizedTarget.slice(1)
+    : normalizedTarget;
   const match =
-    channels.find((ch) => ch.id === to) ??
+    channels.find((ch) => ch.id === normalizedTarget) ??
     channels.find((ch) => ch.name.toLowerCase() === normalized.toLowerCase());
-  return match ? match.id : to;
+  return match ? match.id : normalizedTarget;
 }
