@@ -265,9 +265,9 @@ const typePlugin = {
       abortSignal: AbortSignal;
       log?: { info: (msg: string) => void; error: (msg: string) => void };
     }) => {
-      if (connectionState !== "disconnected") {
+      if (_activeConnection) {
         ctx.log?.info(
-          `Type connection already ${connectionState}, skipping duplicate startAccount`,
+          `Type connection already exists (state=${connectionState}), skipping duplicate startAccount`,
         );
         return;
       }
@@ -330,7 +330,11 @@ const typePlugin = {
           ctx.log?.info("[type] WebSocket connected");
         },
         onDisconnected: () => {
-          connectionState = "disconnected";
+          // Don't reset connectionState here — the reconnect loop manages it.
+          // Only set disconnected if the connection was explicitly stopped.
+          if (!_activeConnection) {
+            connectionState = "disconnected";
+          }
           ctx.log?.info("[type] WebSocket disconnected");
         },
       });

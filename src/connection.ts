@@ -166,6 +166,8 @@ export class TypeConnection {
     });
 
     ws.on("message", (data: WebSocket.Data) => {
+      // Ignore messages from stale sockets
+      if (this.ws !== ws) return;
       this.handleMessage(data.toString());
     });
 
@@ -174,8 +176,11 @@ export class TypeConnection {
     });
 
     ws.on("close", (code: number) => {
+      // Only handle close for the *current* ws instance (ignore stale sockets)
+      if (this.ws !== ws) return;
       this.ws = null;
       this.stopPingInterval();
+      console.log(`[Type WS] Connection closed (code=${code})`);
       this.config.onDisconnected?.();
       // Code 4000 = replaced by another connection — don't reconnect (avoids storm)
       if (!this.stopped && code !== 4000) {
