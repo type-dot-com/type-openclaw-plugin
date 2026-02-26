@@ -8,7 +8,15 @@
 
 import { z } from "zod";
 import type { TypeMessageEvent } from "./protocol.js";
+import type { TypeConnection } from "./connection.js";
 import { type StreamOutbound, StreamSession } from "./streamSession.js";
+
+/** Module-level connection reference for ack failure tracking. */
+let _connectionRef: TypeConnection | null = null;
+
+export function setConnectionRef(conn: TypeConnection | null): void {
+  _connectionRef = conn;
+}
 import { createToolEvents } from "./toolEvents.js";
 
 /**
@@ -288,6 +296,7 @@ export function resolveStreamAck(messageId?: string): void {
   const session = resolveSessionForAck(messageId);
   if (!session) return;
   session.onAck();
+  _connectionRef?.recordAckSuccess();
   if (messageId) {
     const idx = pendingAckOrder.indexOf(messageId);
     if (idx >= 0) {
@@ -310,6 +319,7 @@ export function rejectStreamAck(error: Error, messageId?: string): void {
   const session = resolveSessionForAck(messageId);
   if (!session) return;
   session.onAckError(error);
+  _connectionRef?.recordAckFailure();
   if (messageId) {
     const idx = pendingAckOrder.indexOf(messageId);
     if (idx >= 0) {

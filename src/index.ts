@@ -17,6 +17,7 @@ import {
   type PluginRuntime,
   rejectStreamAck,
   resolveStreamAck,
+  setConnectionRef,
 } from "./messageHandler.js";
 import { TypeOutboundHandler } from "./outbound.js";
 
@@ -140,14 +141,26 @@ const typePlugin = {
           channels.find(
             (ch) => ch.name.toLowerCase() === normalized.toLowerCase(),
           );
-        if (!match) return { input, resolved: false };
-        return {
-          input,
-          resolved: true,
-          id: match.id,
-          name: match.name,
-          kind: "group" as const,
-        };
+        if (match) {
+          return {
+            input,
+            resolved: true,
+            id: match.id,
+            name: match.name,
+            kind: "group" as const,
+          };
+        }
+        // Pass through raw channel IDs (ch_...) even if not in directory
+        if (input.startsWith("ch_")) {
+          return {
+            input,
+            resolved: true,
+            id: input,
+            name: input,
+            kind: "group" as const,
+          };
+        }
+        return { input, resolved: false };
       });
     },
   },
@@ -252,9 +265,9 @@ const typePlugin = {
       abortSignal: AbortSignal;
       log?: { info: (msg: string) => void; error: (msg: string) => void };
     }) => {
-      if (connectionState !== "disconnected") {
+      if (_activeConnection) {
         ctx.log?.info(
-          `Type connection already ${connectionState}, skipping duplicate startAccount`,
+          `Type connection already exists (state=${connectionState}), skipping duplicate startAccount`,
         );
         return;
       }
@@ -317,12 +330,17 @@ const typePlugin = {
           ctx.log?.info("[type] WebSocket connected");
         },
         onDisconnected: () => {
-          connectionState = "disconnected";
+          // Don't reset connectionState here — the reconnect loop manages it.
+          // Only set disconnected if the connection was explicitly stopped.
+          if (!_activeConnection) {
+            connectionState = "disconnected";
+          }
           ctx.log?.info("[type] WebSocket disconnected");
         },
       });
 
       _activeConnection = connection;
+      setConnectionRef(connection);
       activeOutbound = new TypeOutboundHandler(connection);
 
       connection.connect();
@@ -332,6 +350,7 @@ const typePlugin = {
           connectionState = "disconnected";
           connection.disconnect();
           _activeConnection = null;
+          setConnectionRef(null);
           activeOutbound = null;
           resolve();
         });
@@ -354,6 +373,27 @@ const plugin = {
   }) {
     pluginRuntime = api.runtime;
     api.registerChannel({ plugin: typePlugin });
+  },
+  /** Diagnostic status for health checks and debugging. */
+  status(): {
+    state: string;
+    reconnectAttempts: number;
+    lastPongAt: number | null;
+    lastPongAgo: string | null;
+    consecutiveAckFailures: number;
+  } {
+    const lastPong = _activeConnection?.lastPongAt ?? null;
+    return {
+      state: connectionState,
+      reconnectAttempts: _activeConnection?.reconnectAttempts ?? 0,
+      lastPongAt: lastPong,
+      lastPongAgo:
+        lastPong && lastPong > 0
+          ? `${((Date.now() - lastPong) / 1000).toFixed(0)}s ago`
+          : null,
+      consecutiveAckFailures:
+        _activeConnection?.consecutiveAckFailures ?? 0,
+    };
   },
 };
 
