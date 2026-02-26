@@ -482,6 +482,36 @@ export function rejectStreamAck(error: Error, messageId?: string): void {
   }
 }
 
+/**
+ * Mark a tracked stream session as failed after server-side stream rejection.
+ */
+export function failStreamSession(
+  messageId: string,
+  requestType:
+    | "stream_start"
+    | "stream_event"
+    | "stream_finish"
+    | "stream_heartbeat",
+  error: Error,
+): void {
+  const session = sessionsByMessageId.get(messageId);
+  if (!session) return;
+  session.failFromServer(requestType, error);
+  cleanupTrackedSessionIfComplete(messageId);
+}
+
+/**
+ * Fail all active stream sessions. Called on WebSocket disconnect to
+ * immediately clean up orphan sessions instead of waiting for heartbeat
+ * timeouts.
+ */
+export function failAllStreamSessions(error: Error): void {
+  for (const messageId of [...sessionsByMessageId.keys()]) {
+    failStreamSession(messageId, "stream_start", error);
+    untrackSession(messageId);
+  }
+}
+
 const bindingsConfigSchema = z.object({
   bindings: z
     .array(

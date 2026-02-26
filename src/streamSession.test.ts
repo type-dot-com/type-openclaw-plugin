@@ -19,6 +19,9 @@ function createOutboundRecorder(calls: OutboundCall[]): StreamOutbound {
     streamEvent(): boolean {
       return true;
     },
+    streamHeartbeat(): boolean {
+      return true;
+    },
     finishStream(messageId: string): boolean {
       calls.push({ kind: "finish", messageId });
       return true;
@@ -42,6 +45,25 @@ describe("StreamSession", () => {
       { kind: "start", messageId: "msg_1" },
       { kind: "token", messageId: "msg_1", text: "Hello" },
       { kind: "finish", messageId: "msg_1" },
+    ]);
+  });
+
+  test("stops sending after server rejects stream_event", () => {
+    const calls: OutboundCall[] = [];
+    const session = new StreamSession(createOutboundRecorder(calls), "msg_2");
+
+    session.sendToken("A");
+    session.onAck();
+    session.failFromServer(
+      "stream_event",
+      new Error("No active stream for this message"),
+    );
+    session.sendToken("AB");
+    session.finish();
+
+    expect(calls).toEqual([
+      { kind: "start", messageId: "msg_2" },
+      { kind: "token", messageId: "msg_2", text: "A" },
     ]);
   });
 });

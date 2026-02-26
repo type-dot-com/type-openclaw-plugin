@@ -76,6 +76,16 @@ export class TypeOutboundHandler {
   }
 
   /**
+   * Keep an active stream alive while no tokens/events are emitted.
+   */
+  streamHeartbeat(messageId: string): boolean {
+    return this.connection.send({
+      type: "stream_heartbeat",
+      messageId,
+    });
+  }
+
+  /**
    * Finalize a streaming response.
    */
   finishStream(messageId: string, fileIds?: string[]): boolean {

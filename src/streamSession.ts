@@ -9,6 +9,7 @@ import type { z } from "zod";
 import type { ToolEventPayload, ToolEventPayloadSchema } from "./toolEvents.js";
 
 const ACK_TIMEOUT_MS = 5000;
+const HEARTBEAT_INTERVAL_MS = 10_000;
 
 export interface StreamOutbound {
   startStream: (messageId: string) => boolean;
@@ -17,6 +18,7 @@ export interface StreamOutbound {
     messageId: string,
     event: z.infer<typeof ToolEventPayloadSchema>,
   ) => boolean;
+  streamHeartbeat: (messageId: string) => boolean;
   finishStream: (messageId: string) => boolean;
 }
 
@@ -36,6 +38,7 @@ export class StreamSession {
   #pendingAck: { resolve: () => void; reject: (err: Error) => void } | null =
     null;
   #ackTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  #heartbeatIntervalId: ReturnType<typeof setInterval> | null = null;
 
   constructor(outbound: StreamOutbound, messageId: string) {
     this.#outbound = outbound;
@@ -76,6 +79,7 @@ export class StreamSession {
       resolve: () => {
         this.#clearAckTimeout();
         this.#ready = true;
+        this.#startHeartbeat();
         this.#flushBuffers();
         if (this.#finishRequested && !this.#finishSent && !this.#failed) {
           this.#sendFinish();
@@ -117,6 +121,32 @@ export class StreamSession {
       this.#pendingAck.reject(error);
       this.#pendingAck = null;
     }
+  }
+
+  /**
+   * Mark stream terminal after server rejects an in-flight stream request.
+   */
+  failFromServer(
+    requestType:
+      | "stream_start"
+      | "stream_event"
+      | "stream_finish"
+      | "stream_heartbeat",
+    error: Error,
+  ): void {
+    if (this.#failed || this.#finishSent) return;
+    const kind =
+      requestType === "stream_finish"
+        ? "stream_finish"
+        : requestType === "stream_start"
+          ? "stream_start"
+          : requestType === "stream_heartbeat"
+            ? "stream_heartbeat"
+            : "stream_event";
+    this.#markSendFailed({
+      kind,
+      message: `${requestType} rejected by server: ${error.message}`,
+    });
   }
 
   /**
@@ -205,6 +235,7 @@ export class StreamSession {
     }
     this.#finishSent = true;
     this.#finishRequested = false;
+    this.#stopHeartbeat();
   }
 
   #clearAckTimeout(): void {
@@ -212,6 +243,26 @@ export class StreamSession {
       clearTimeout(this.#ackTimeoutId);
       this.#ackTimeoutId = null;
     }
+  }
+
+  #startHeartbeat(): void {
+    this.#stopHeartbeat();
+    this.#heartbeatIntervalId = setInterval(() => {
+      if (!this.#ready || this.#failed || this.#finishSent) return;
+      const sent = this.#outbound.streamHeartbeat(this.#messageId);
+      if (!sent) {
+        this.#markSendFailed({
+          kind: "stream_heartbeat",
+          message: "streamHeartbeat send failed (connection not open)",
+        });
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  #stopHeartbeat(): void {
+    if (!this.#heartbeatIntervalId) return;
+    clearInterval(this.#heartbeatIntervalId);
+    this.#heartbeatIntervalId = null;
   }
 
   #flushBuffers(): void {
@@ -245,13 +296,19 @@ export class StreamSession {
   }
 
   #markSendFailed(params: {
-    kind: "stream_start" | "stream_token" | "stream_event" | "stream_finish";
+    kind:
+      | "stream_start"
+      | "stream_token"
+      | "stream_event"
+      | "stream_finish"
+      | "stream_heartbeat";
     message: string;
     eventKind?: string;
   }): void {
     if (this.#failed) return;
     this.#failed = true;
     this.#clearAckTimeout();
+    this.#stopHeartbeat();
     this.#pendingAck = null;
     this.#finishRequested = false;
     this.#pendingTokens.length = 0;

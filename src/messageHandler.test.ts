@@ -59,6 +59,9 @@ describe("messageHandler stream ack routing", () => {
       streamEvent(): boolean {
         return true;
       },
+      streamHeartbeat(): boolean {
+        return true;
+      },
       finishStream(messageId: string): boolean {
         finished.push(messageId);
         return true;
@@ -151,6 +154,9 @@ describe("messageHandler stream ack routing", () => {
         return true;
       },
       streamEvent(): boolean {
+        return true;
+      },
+      streamHeartbeat(): boolean {
         return true;
       },
       finishStream(messageId: string): boolean {
@@ -451,6 +457,9 @@ describe("messageHandler stream ack routing", () => {
         return true;
       },
       streamEvent(): boolean {
+        return true;
+      },
+      streamHeartbeat(): boolean {
         return true;
       },
       finishStream(): boolean {

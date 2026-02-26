@@ -19,6 +19,8 @@ import {
 import { TypeConnection } from "./connection.js";
 import { uploadMediaForType } from "./mediaUpload.js";
 import {
+  failAllStreamSessions,
+  failStreamSession,
   handleInboundMessage,
   type PluginRuntime,
   rejectStreamAck,
@@ -398,17 +400,36 @@ const typePlugin = {
               `[type] Server error: ${errEvt.requestType} — ${errEvt.error}`,
               errEvt.details ?? "",
             );
+            const error = new Error(errEvt.error ?? "stream request failed");
+            if (
+              errEvt.messageId &&
+              (errEvt.requestType === "stream_start" ||
+                errEvt.requestType === "stream_event" ||
+                errEvt.requestType === "stream_finish" ||
+                errEvt.requestType === "stream_heartbeat")
+            ) {
+              failStreamSession(errEvt.messageId, errEvt.requestType, error);
+            }
             if (errEvt.requestType === "stream_start") {
-              rejectStreamAck(
-                new Error(errEvt.error ?? "stream_start failed"),
-                errEvt.messageId,
-              );
+              rejectStreamAck(error, errEvt.messageId);
             }
             return;
           }
 
           if (event.type !== "message") return;
           if (!activeOutbound) return;
+
+          const acknowledged = connection.send({
+            type: "trigger_received",
+            messageId: event.messageId,
+            receivedAt: Date.now(),
+          });
+          if (!acknowledged) {
+            console.error(
+              `[type] Failed to send trigger_received ack for ${event.messageId}`,
+            );
+            return;
+          }
 
           handleInboundMessage({
             msg: event,
@@ -427,6 +448,7 @@ const typePlugin = {
         onDisconnected: () => {
           connectionState = "disconnected";
           ctx.log?.info("[type] WebSocket disconnected");
+          failAllStreamSessions(new Error("WebSocket disconnected"));
         },
       });
 

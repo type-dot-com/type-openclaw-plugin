@@ -129,6 +129,12 @@ export interface PongMessage {
   type: "pong";
 }
 
+export interface TriggerReceivedMessage {
+  type: "trigger_received";
+  messageId: string;
+  receivedAt?: number;
+}
+
 export interface SendMessage {
   type: "send";
   channelId: string;
@@ -158,6 +164,11 @@ export interface StreamEventMessage {
   };
 }
 
+export interface StreamHeartbeatMessage {
+  type: "stream_heartbeat";
+  messageId: string;
+}
+
 export interface StreamFinishMessage {
   type: "stream_finish";
   messageId: string;
@@ -167,8 +178,10 @@ export interface StreamFinishMessage {
 export type TypeOutboundMessage =
   | PingMessage
   | PongMessage
+  | TriggerReceivedMessage
   | SendMessage
   | RespondMessage
   | StreamStartMessage
   | StreamEventMessage
+  | StreamHeartbeatMessage
   | StreamFinishMessage;
