@@ -148,6 +148,10 @@ export interface RespondMessage {
   messageId: string;
   content: string;
   fileIds?: string[];
+  /** Signal that the agent expects a reply from the user */
+  needsReply?: boolean;
+  /** Optional question text for the UI when needsReply is true */
+  question?: string;
 }
 
 export interface StreamStartMessage {
@@ -173,6 +177,10 @@ export interface StreamFinishMessage {
   type: "stream_finish";
   messageId: string;
   fileIds?: string[];
+  /** Signal that the agent expects a reply from the user */
+  needsReply?: boolean;
+  /** Optional question text for the UI when needsReply is true */
+  question?: string;
 }
 
 export type TypeOutboundMessage =

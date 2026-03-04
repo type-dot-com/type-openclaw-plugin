@@ -9,8 +9,8 @@
 import { z } from "zod";
 import { resolveApiOriginFromWsUrl } from "./apiOrigin.js";
 import type { TypeMessageEvent } from "./protocol.js";
+import { ReplyTextProcessor } from "./replyTextProcessor.js";
 import { type StreamOutbound, StreamSession } from "./streamSession.js";
-import { createToolEvents } from "./toolEvents.js";
 
 /**
  * Minimal typing for the OpenClaw plugin SDK runtime.
@@ -63,8 +63,6 @@ const deferredCleanupByMessageId = new Map<
   ReturnType<typeof setTimeout>
 >();
 const DEFERRED_ACK_CLEANUP_MS = 6000;
-const NO_REPLY_SENTINEL = "NO_REPLY";
-const NO_REPLY_SHORT_SENTINEL = "NO";
 const FILE_URL_FETCH_TIMEOUT_MS = 10_000;
 const downloadUrlResponseSchema = z.object({
   downloadUrl: z.string().url().optional(),
@@ -72,6 +70,39 @@ const downloadUrlResponseSchema = z.object({
 type ThreadTriggerContext = NonNullable<
   NonNullable<TypeMessageEvent["context"]>["thread"]
 >;
+
+function resolveToolCallId(info: Record<string, unknown>): string | undefined {
+  const directCandidates = [
+    info.toolCallId,
+    info.tool_call_id,
+    info.callId,
+    info.call_id,
+  ];
+  for (const candidate of directCandidates) {
+    if (typeof candidate === "string" && candidate.length > 0) {
+      return candidate;
+    }
+  }
+
+  const nestedCandidates = [info.tool, info.payload, info.event];
+  for (const nested of nestedCandidates) {
+    if (!nested || typeof nested !== "object") continue;
+    const nestedRecord = nested as Record<string, unknown>;
+    const nestedDirect = [
+      nestedRecord.toolCallId,
+      nestedRecord.tool_call_id,
+      nestedRecord.callId,
+      nestedRecord.call_id,
+    ];
+    for (const candidate of nestedDirect) {
+      if (typeof candidate === "string" && candidate.length > 0) {
+        return candidate;
+      }
+    }
+  }
+
+  return undefined;
+}
 
 function resolveDownloadUrl(
   file: InboundFileWithDownloadUrl,
@@ -634,60 +665,9 @@ export function handleInboundMessage(params: {
 
       const session = new StreamSession(outbound, msg.messageId);
       trackSession(msg.messageId, session);
-      let pendingNoReplyCandidateText: string | null = null;
-      let noReplySuppressed = false;
-      let sawToolEvent = false;
-
-      const getEffectiveNoReplySentinels = (): readonly string[] =>
-        sawToolEvent
-          ? [NO_REPLY_SENTINEL, NO_REPLY_SHORT_SENTINEL]
-          : [NO_REPLY_SENTINEL];
-
-      const sendPartialReplyText = (text: string, isFinalAttempt: boolean) => {
-        if (session.isFailed || noReplySuppressed) return;
-        const trimmed = text.trim();
-        if (trimmed.length === 0) return;
-
-        const pendingCandidate = pendingNoReplyCandidateText;
-        const candidateText = pendingCandidate
-          ? text.startsWith(pendingCandidate)
-            ? text
-            : `${pendingCandidate}${text}`
-          : text;
-        const upperTrimmed = candidateText.trim().toUpperCase();
-        const effectiveSentinels = getEffectiveNoReplySentinels();
-        if (effectiveSentinels.includes(upperTrimmed)) {
-          // Sentinel used by OpenClaw to suppress a follow-up assistant message
-          // after a direct tool-send. Never forward this text to Type.
-          noReplySuppressed = true;
-          pendingNoReplyCandidateText = null;
-          return;
-        }
-
-        const isPossibleSentinelPrefix = effectiveSentinels.some((sentinel) =>
-          sentinel.startsWith(upperTrimmed),
-        );
-        if (isPossibleSentinelPrefix) {
-          pendingNoReplyCandidateText = candidateText;
-          if (!isFinalAttempt) {
-            return;
-          }
-        } else {
-          pendingNoReplyCandidateText = null;
-        }
-
-        session.sendToken(candidateText);
-        if (session.isStarted) {
-          markSessionAwaitingAck(msg.messageId);
-        }
-      };
-
-      const flushPendingNoReplyCandidate = () => {
-        if (!pendingNoReplyCandidateText || noReplySuppressed) return;
-        const pendingText = pendingNoReplyCandidateText;
-        pendingNoReplyCandidateText = null;
-        sendPartialReplyText(pendingText, true);
-      };
+      const processor = new ReplyTextProcessor(session, () =>
+        markSessionAwaitingAck(msg.messageId),
+      );
 
       void runtime.channel.reply
         .dispatchReplyWithBufferedBlockDispatcher({
@@ -698,22 +678,15 @@ export function handleInboundMessage(params: {
               payload: { text?: string },
               info: Record<string, unknown>,
             ) => {
-              // Handle tool results as native tool-call + tool-result stream
-              // events so they render as collapsible cards in Type's UI.
-              if (info.kind === "tool") {
-                sawToolEvent = true;
-                if (session.isFailed) return;
-                if (payload.text) {
-                  const [toolCall, toolResult] = createToolEvents(payload.text);
-                  session.sendToolEvent(toolCall);
-                  session.sendToolEvent(toolResult);
-                }
-                session.resetTextAccumulator();
-                if (session.isStarted && !session.isFailed) {
-                  markSessionAwaitingAck(msg.messageId);
-                }
+              if (info.kind !== "tool") return;
+              if (!payload.text) {
+                processor.markToolEventSeen();
+                return;
               }
-              // Other kinds (block, final) are no-op — onPartialReply handles text
+              const intercepted = processor.handleToolDelivery(payload.text, {
+                toolCallId: resolveToolCallId(info),
+              });
+              if (intercepted) return;
             },
             onSkip: (_payload, info) => {
               console.log(`[type] Reply skipped: ${JSON.stringify(info)}`);
@@ -728,14 +701,19 @@ export function handleInboundMessage(params: {
             disableBlockStreaming: true,
             onPartialReply: (payload: { text?: string }) => {
               if (!payload.text || session.isFailed) return;
-              sendPartialReplyText(payload.text, false);
+              processor.processText(payload.text, false);
             },
           },
         })
         .then(() => {
-          flushPendingNoReplyCandidate();
-          if (session.isStarted) {
-            session.finish();
+          processor.flush();
+          const { needsReply, needsReplyQuestion } = processor.result;
+          if (session.isStarted || needsReply) {
+            session.finish(
+              needsReply
+                ? { needsReply: true, question: needsReplyQuestion }
+                : undefined,
+            );
           }
           markSessionDispatchComplete(msg.messageId);
         })
@@ -743,7 +721,7 @@ export function handleInboundMessage(params: {
           console.error(
             `[type] Stream dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
           );
-          flushPendingNoReplyCandidate();
+          processor.flush();
           if (session.isStarted) {
             session.finish();
           }

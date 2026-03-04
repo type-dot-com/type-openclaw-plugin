@@ -19,7 +19,11 @@ export interface StreamOutbound {
     event: z.infer<typeof ToolEventPayloadSchema>,
   ) => boolean;
   streamHeartbeat: (messageId: string) => boolean;
-  finishStream: (messageId: string) => boolean;
+  finishStream: (
+    messageId: string,
+    fileIds?: string[],
+    opts?: { needsReply?: boolean; question?: string },
+  ) => boolean;
 }
 
 export class StreamSession {
@@ -33,6 +37,7 @@ export class StreamSession {
   #finishSent = false;
   #lastSentLength = 0;
 
+  #finishOpts: { needsReply?: boolean; question?: string } | undefined;
   #pendingTokens: string[] = [];
   #pendingToolEvents: ToolEventPayload[] = [];
   #pendingAck: { resolve: () => void; reject: (err: Error) => void } | null =
@@ -210,9 +215,15 @@ export class StreamSession {
   /**
    * Finalize the stream. Call after dispatch completes (success or error).
    */
-  finish(): void {
+  finish(opts?: { needsReply?: boolean; question?: string }): void {
+    // A needsReply finish requires a stream even if no tokens were sent.
+    // Without this, the guard below silently drops the question.
+    if (opts?.needsReply && !this.#started && !this.#failed) {
+      this.ensureStarted();
+    }
     if (!this.#started || this.#failed || this.#finishSent) return;
     this.#finishRequested = true;
+    this.#finishOpts = opts;
 
     if (!this.#ready) return;
 
@@ -224,7 +235,11 @@ export class StreamSession {
       this.#finishRequested = false;
       return;
     }
-    const finished = this.#outbound.finishStream(this.#messageId);
+    const finished = this.#outbound.finishStream(
+      this.#messageId,
+      undefined,
+      this.#finishOpts,
+    );
     if (!finished) {
       this.#markSendFailed({
         kind: "stream_finish",

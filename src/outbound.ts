@@ -13,12 +13,19 @@ export class TypeOutboundHandler {
   /**
    * Send a non-streaming full response to a triggered message.
    */
-  respond(messageId: string, content: string, fileIds?: string[]): boolean {
+  respond(
+    messageId: string,
+    content: string,
+    fileIds?: string[],
+    opts?: { needsReply?: boolean; question?: string },
+  ): boolean {
     return this.connection.send({
       type: "respond",
       messageId,
       content,
       ...(fileIds?.length ? { fileIds } : {}),
+      ...(opts?.needsReply ? { needsReply: true } : {}),
+      ...(opts?.question ? { question: opts.question } : {}),
     });
   }
 
@@ -88,11 +95,17 @@ export class TypeOutboundHandler {
   /**
    * Finalize a streaming response.
    */
-  finishStream(messageId: string, fileIds?: string[]): boolean {
+  finishStream(
+    messageId: string,
+    fileIds?: string[],
+    opts?: { needsReply?: boolean; question?: string },
+  ): boolean {
     return this.connection.send({
       type: "stream_finish",
       messageId,
       ...(fileIds?.length ? { fileIds } : {}),
+      ...(opts?.needsReply ? { needsReply: true } : {}),
+      ...(opts?.question ? { question: opts.question } : {}),
     });
   }
 }

@@ -10,6 +10,7 @@
  */
 
 import path from "node:path";
+import { agentTools } from "./agentTools.js";
 import { fetchChannelsCached, resolveChannelId } from "./channels.js";
 import {
   DEFAULT_TYPE_WS_URL,
@@ -348,6 +349,8 @@ const typePlugin = {
       }
     },
   },
+
+  agentTools,
 
   gateway: {
     startAccount: async (ctx: {
