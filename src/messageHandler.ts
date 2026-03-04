@@ -56,13 +56,49 @@ type InboundFileWithDownloadUrl = InboundFile & {
   url?: string;
 };
 
-const sessionsByMessageId = new Map<string, StreamSession>();
+/**
+ * Composite key for session maps: `${accountId}\0${messageId}`.
+ * Prevents cross-account collisions when multiple accounts may process
+ * messages with overlapping IDs.
+ */
+const KEY_SEP = "\0";
+
+function sessionKey(accountId: string, messageId: string): string {
+  return `${accountId}${KEY_SEP}${messageId}`;
+}
+
+function parseSessionKey(key: string): {
+  accountId: string;
+  messageId: string;
+} {
+  const idx = key.indexOf(KEY_SEP);
+  return {
+    accountId: key.substring(0, idx),
+    messageId: key.substring(idx + 1),
+  };
+}
+
+function findKeyByMessageId(messageId: string): string | undefined {
+  const suffix = `${KEY_SEP}${messageId}`;
+  for (const key of sessionsByKey.keys()) {
+    if (key.endsWith(suffix)) return key;
+  }
+  return undefined;
+}
+
+function resolveCompositeKey(
+  messageId?: string,
+  accountId?: string,
+): string | undefined {
+  if (messageId && accountId) return sessionKey(accountId, messageId);
+  if (messageId) return findKeyByMessageId(messageId);
+  return undefined;
+}
+
+const sessionsByKey = new Map<string, StreamSession>();
 const pendingAckOrder: string[] = [];
-const dispatchCompletedMessageIds = new Set<string>();
-const deferredCleanupByMessageId = new Map<
-  string,
-  ReturnType<typeof setTimeout>
->();
+const dispatchCompletedKeys = new Set<string>();
+const deferredCleanupByKey = new Map<string, ReturnType<typeof setTimeout>>();
 const DEFERRED_ACK_CLEANUP_MS = 6000;
 const FILE_URL_FETCH_TIMEOUT_MS = 10_000;
 const downloadUrlResponseSchema = z.object({
@@ -115,61 +151,79 @@ function resolveDownloadUrl(
   return resolvedUrl;
 }
 
-function trackSession(messageId: string, session: StreamSession): void {
-  const existing = sessionsByMessageId.get(messageId);
+function trackSession(key: string, session: StreamSession): void {
+  const existing = sessionsByKey.get(key);
   if (existing) {
-    untrackSession(messageId);
+    untrackSession(key);
   }
-  dispatchCompletedMessageIds.delete(messageId);
-  sessionsByMessageId.set(messageId, session);
+  dispatchCompletedKeys.delete(key);
+  sessionsByKey.set(key, session);
 }
 
-function untrackSession(messageId: string): void {
-  sessionsByMessageId.delete(messageId);
-  dispatchCompletedMessageIds.delete(messageId);
-  const idx = pendingAckOrder.indexOf(messageId);
+function untrackSession(key: string): void {
+  sessionsByKey.delete(key);
+  dispatchCompletedKeys.delete(key);
+  const idx = pendingAckOrder.indexOf(key);
   if (idx >= 0) {
     pendingAckOrder.splice(idx, 1);
   }
-  const cleanupTimer = deferredCleanupByMessageId.get(messageId);
+  const cleanupTimer = deferredCleanupByKey.get(key);
   if (cleanupTimer) {
     clearTimeout(cleanupTimer);
-    deferredCleanupByMessageId.delete(messageId);
+    deferredCleanupByKey.delete(key);
   }
 }
 
-function markSessionAwaitingAck(messageId: string): void {
-  if (!pendingAckOrder.includes(messageId)) {
-    pendingAckOrder.push(messageId);
+function markSessionAwaitingAck(key: string): void {
+  if (!pendingAckOrder.includes(key)) {
+    pendingAckOrder.push(key);
   }
 }
 
-function resolveSessionForAck(messageId?: string): StreamSession | null {
+function resolveSessionForAck(
+  messageId?: string,
+  accountId?: string,
+): { session: StreamSession; key: string } | null {
   if (messageId) {
-    const byId = sessionsByMessageId.get(messageId);
-    return byId?.isAwaitingAck ? byId : null;
+    const key = resolveCompositeKey(messageId, accountId);
+    if (!key) return null;
+    const session = sessionsByKey.get(key);
+    if (!session?.isAwaitingAck) return null;
+    return { session, key };
   }
 
-  while (pendingAckOrder.length > 0) {
-    const nextMessageId = pendingAckOrder[0];
-    const session = sessionsByMessageId.get(nextMessageId);
-    if (session?.isAwaitingAck) {
-      return session;
+  // Walk pendingAckOrder and find the first session that matches the account
+  let i = 0;
+  while (i < pendingAckOrder.length) {
+    const key = pendingAckOrder[i];
+    const session = sessionsByKey.get(key);
+    if (!session) {
+      pendingAckOrder.splice(i, 1);
+      continue;
     }
-    pendingAckOrder.shift();
+    if (!session.isAwaitingAck) {
+      pendingAckOrder.splice(i, 1);
+      continue;
+    }
+    // If accountId is specified, skip sessions from other accounts
+    if (accountId && parseSessionKey(key).accountId !== accountId) {
+      i++;
+      continue;
+    }
+    return { session, key };
   }
 
   return null;
 }
 
-function cleanupTrackedSessionIfComplete(messageId: string): void {
-  const session = sessionsByMessageId.get(messageId);
+function cleanupTrackedSessionIfComplete(key: string): void {
+  const session = sessionsByKey.get(key);
   if (!session) {
-    dispatchCompletedMessageIds.delete(messageId);
+    dispatchCompletedKeys.delete(key);
     return;
   }
 
-  if (!dispatchCompletedMessageIds.has(messageId)) {
+  if (!dispatchCompletedKeys.has(key)) {
     return;
   }
 
@@ -177,26 +231,26 @@ function cleanupTrackedSessionIfComplete(messageId: string): void {
     return;
   }
 
-  untrackSession(messageId);
+  untrackSession(key);
 }
 
-function scheduleDeferredAckCleanup(messageId: string): void {
-  if (deferredCleanupByMessageId.has(messageId)) {
+function scheduleDeferredAckCleanup(key: string): void {
+  if (deferredCleanupByKey.has(key)) {
     return;
   }
   const timer = setTimeout(() => {
-    deferredCleanupByMessageId.delete(messageId);
-    cleanupTrackedSessionIfComplete(messageId);
+    deferredCleanupByKey.delete(key);
+    cleanupTrackedSessionIfComplete(key);
   }, DEFERRED_ACK_CLEANUP_MS);
-  deferredCleanupByMessageId.set(messageId, timer);
+  deferredCleanupByKey.set(key, timer);
 }
 
-function markSessionDispatchComplete(messageId: string): void {
-  dispatchCompletedMessageIds.add(messageId);
-  cleanupTrackedSessionIfComplete(messageId);
-  const session = sessionsByMessageId.get(messageId);
+function markSessionDispatchComplete(key: string): void {
+  dispatchCompletedKeys.add(key);
+  cleanupTrackedSessionIfComplete(key);
+  const session = sessionsByKey.get(key);
   if (session?.isAwaitingAck) {
-    scheduleDeferredAckCleanup(messageId);
+    scheduleDeferredAckCleanup(key);
   }
 }
 
@@ -472,46 +526,38 @@ function buildMediaContextFields(
 
 /**
  * Resolve the pending stream_start ack on a specific session.
- * Falls back to the oldest pending session when messageId is missing.
+ * Falls back to the oldest pending session for the given account
+ * when messageId is missing.
  */
-export function resolveStreamAck(messageId?: string): void {
-  const session = resolveSessionForAck(messageId);
-  if (!session) return;
-  session.onAck();
-  if (messageId) {
-    const idx = pendingAckOrder.indexOf(messageId);
-    if (idx >= 0) {
-      pendingAckOrder.splice(idx, 1);
-    }
-    cleanupTrackedSessionIfComplete(messageId);
-    return;
+export function resolveStreamAck(messageId?: string, accountId?: string): void {
+  const result = resolveSessionForAck(messageId, accountId);
+  if (!result) return;
+  result.session.onAck();
+  const idx = pendingAckOrder.indexOf(result.key);
+  if (idx >= 0) {
+    pendingAckOrder.splice(idx, 1);
   }
-  const pendingMessageId = pendingAckOrder.shift();
-  if (pendingMessageId) {
-    cleanupTrackedSessionIfComplete(pendingMessageId);
-  }
+  cleanupTrackedSessionIfComplete(result.key);
 }
 
 /**
  * Reject the pending stream_start ack on a specific session.
- * Falls back to the oldest pending session when messageId is missing.
+ * Falls back to the oldest pending session for the given account
+ * when messageId is missing.
  */
-export function rejectStreamAck(error: Error, messageId?: string): void {
-  const session = resolveSessionForAck(messageId);
-  if (!session) return;
-  session.onAckError(error);
-  if (messageId) {
-    const idx = pendingAckOrder.indexOf(messageId);
-    if (idx >= 0) {
-      pendingAckOrder.splice(idx, 1);
-    }
-    cleanupTrackedSessionIfComplete(messageId);
-    return;
+export function rejectStreamAck(
+  error: Error,
+  messageId?: string,
+  accountId?: string,
+): void {
+  const result = resolveSessionForAck(messageId, accountId);
+  if (!result) return;
+  result.session.onAckError(error);
+  const idx = pendingAckOrder.indexOf(result.key);
+  if (idx >= 0) {
+    pendingAckOrder.splice(idx, 1);
   }
-  const pendingMessageId = pendingAckOrder.shift();
-  if (pendingMessageId) {
-    cleanupTrackedSessionIfComplete(pendingMessageId);
-  }
+  cleanupTrackedSessionIfComplete(result.key);
 }
 
 /**
@@ -525,22 +571,44 @@ export function failStreamSession(
     | "stream_finish"
     | "stream_heartbeat",
   error: Error,
+  accountId?: string,
 ): void {
-  const session = sessionsByMessageId.get(messageId);
+  const key = resolveCompositeKey(messageId, accountId);
+  if (!key) return;
+  const session = sessionsByKey.get(key);
   if (!session) return;
   session.failFromServer(requestType, error);
-  cleanupTrackedSessionIfComplete(messageId);
+  cleanupTrackedSessionIfComplete(key);
 }
 
 /**
- * Fail all active stream sessions. Called on WebSocket disconnect to
- * immediately clean up orphan sessions instead of waiting for heartbeat
- * timeouts.
+ * Fail all active stream sessions. Called as a last resort when the entire
+ * plugin is shutting down.
  */
 export function failAllStreamSessions(error: Error): void {
-  for (const messageId of [...sessionsByMessageId.keys()]) {
-    failStreamSession(messageId, "stream_start", error);
-    untrackSession(messageId);
+  for (const key of [...sessionsByKey.keys()]) {
+    const { messageId, accountId } = parseSessionKey(key);
+    failStreamSession(messageId, "stream_start", error, accountId);
+    untrackSession(key);
+  }
+}
+
+/**
+ * Fail only the stream sessions belonging to a specific account.
+ * Called on per-account WebSocket disconnect to avoid failing sessions
+ * from other still-connected accounts.
+ */
+export function failStreamSessionsForAccount(
+  accountId: string,
+  error: Error,
+): void {
+  const prefix = `${accountId}${KEY_SEP}`;
+  for (const key of [...sessionsByKey.keys()]) {
+    if (key.startsWith(prefix)) {
+      const { messageId } = parseSessionKey(key);
+      failStreamSession(messageId, "stream_start", error, accountId);
+      untrackSession(key);
+    }
   }
 }
 
@@ -549,25 +617,68 @@ const bindingsConfigSchema = z.object({
     .array(
       z.object({
         agentId: z.string().optional(),
-        match: z.object({ channel: z.string().optional() }).optional(),
+        match: z
+          .object({
+            channel: z.string(),
+            accountId: z.string().optional(),
+          })
+          .optional(),
       }),
     )
     .optional(),
 });
 
-function resolveAgentFromBindings(
-  cfg: Record<string, unknown>,
-  channel: string,
-): string | undefined {
-  const parsed = bindingsConfigSchema.safeParse(cfg);
-  if (!parsed.success) return undefined;
-  const bindings = parsed.data.bindings ?? [];
+type BindingsConfig = z.infer<typeof bindingsConfigSchema>;
+
+/**
+ * Resolve the OpenClaw agent ID for session key scoping.
+ *
+ * OpenClaw parses the `agent:<id>` prefix from SessionKey to determine
+ * which agent workspace/sessions to use. This MUST be the OpenClaw agent
+ * ID (from bindings), not the Type agent ID or account key.
+ *
+ * Resolution order:
+ * 1. Binding matching both channel + accountId (most specific)
+ * 2. Binding matching channel only (legacy single-account)
+ * 3. Binding with no match (wildcard fallback)
+ * 4. Fallback to "main"
+ */
+function resolveAgentIdForSession(
+  cfg: BindingsConfig,
+  accountId: string,
+): string {
+  const bindings = cfg.bindings ?? [];
+
+  // Pass 1: match on both channel and accountId
   for (const binding of bindings) {
-    if (binding.match?.channel === channel && binding.agentId) {
+    if (
+      binding.match?.channel === "type" &&
+      binding.match.accountId === accountId &&
+      binding.agentId
+    ) {
       return binding.agentId;
     }
   }
-  return undefined;
+
+  // Pass 2: match on channel only (legacy / wildcard)
+  for (const binding of bindings) {
+    if (
+      binding.match?.channel === "type" &&
+      !binding.match.accountId &&
+      binding.agentId
+    ) {
+      return binding.agentId;
+    }
+  }
+
+  // Pass 3: binding with no match acts as a wildcard
+  for (const binding of bindings) {
+    if (!binding.match && binding.agentId) {
+      return binding.agentId;
+    }
+  }
+
+  return "main";
 }
 
 /**
@@ -619,7 +730,11 @@ export function handleInboundMessage(params: {
         `[type] Trigger context summary: threadMessages=${threadContext?.messages.length ?? 0}, recentMessages=${msg.context?.recentMessages?.length ?? 0}`,
       );
 
-      const agentId = resolveAgentFromBindings(cfg, "type") ?? "main";
+      const parsedCfg = bindingsConfigSchema.safeParse(cfg);
+      const agentId = resolveAgentIdForSession(
+        parsedCfg.success ? parsedCfg.data : { bindings: [] },
+        accountId,
+      );
 
       const ctxPayload = runtime.channel.reply.finalizeInboundContext({
         Body: bodyForAgent,
@@ -665,10 +780,11 @@ export function handleInboundMessage(params: {
       });
 
       const session = new StreamSession(outbound, msg.messageId);
-      trackSession(msg.messageId, session);
+      const key = sessionKey(accountId, msg.messageId);
+      trackSession(key, session);
       const processor = new ReplyTextProcessor(
         session,
-        () => markSessionAwaitingAck(msg.messageId),
+        () => markSessionAwaitingAck(key),
         msg.messageId,
       );
 
@@ -724,7 +840,7 @@ export function handleInboundMessage(params: {
                     : undefined,
                 );
               }
-              markSessionDispatchComplete(msg.messageId);
+              markSessionDispatchComplete(key);
             })
             .catch((err: unknown) => {
               cleanupScope(msg.messageId);
@@ -735,7 +851,7 @@ export function handleInboundMessage(params: {
               if (session.isStarted) {
                 session.finish();
               }
-              markSessionDispatchComplete(msg.messageId);
+              markSessionDispatchComplete(key);
             });
         } catch (syncErr) {
           cleanupScope(msg.messageId);

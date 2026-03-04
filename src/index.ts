@@ -2,14 +2,22 @@
  * OpenClaw Type Channel Plugin
  *
  * Registers a Type channel with OpenClaw, enabling bidirectional
- * communication via a single duplex WebSocket connection.
+ * communication via duplex WebSocket connections.
  *
- * Follows the same pattern as openclaw-mqtt: stores api.runtime at
- * registration time, then uses runtime.channel.reply.* to dispatch
- * inbound messages through the standard OpenClaw agent pipeline.
+ * Supports multiple accounts (following the Discord/Telegram pattern),
+ * where each account maintains its own WebSocket connection to a
+ * different Type agent.
  */
 
 import path from "node:path";
+import {
+  clearAccountState,
+  getAccountContextForAccount,
+  getAccountState,
+  getOutboundForAccount,
+  getPluginRuntime,
+  setPluginRuntime,
+} from "./accountState.js";
 import { agentTools } from "./agentTools.js";
 import { fetchChannelsCached, resolveChannelId } from "./channels.js";
 import {
@@ -20,8 +28,8 @@ import {
 import { TypeConnection } from "./connection.js";
 import { uploadMediaForType } from "./mediaUpload.js";
 import {
-  failAllStreamSessions,
   failStreamSession,
+  failStreamSessionsForAccount,
   handleInboundMessage,
   type PluginRuntime,
   rejectStreamAck,
@@ -32,18 +40,6 @@ import {
   isLikelyTypeTargetId,
   normalizeTypeTarget,
 } from "./targetNormalization.js";
-
-// Module-level runtime reference (set during register, used in gateway)
-let pluginRuntime: PluginRuntime | null = null;
-let _activeConnection: TypeConnection | null = null;
-let activeOutbound: TypeOutboundHandler | null = null;
-let activeAccountContext: {
-  token: string;
-  wsUrl: string;
-  agentId: string;
-} | null = null;
-let connectionState: "disconnected" | "connecting" | "connected" =
-  "disconnected";
 
 function isPathWithinRoot(candidatePath: string, rootPath: string): boolean {
   const relative = path.relative(rootPath, candidatePath);
@@ -268,13 +264,14 @@ const typePlugin = {
     }): Promise<
       { ok: true; channel: string } | { ok: false; error: string }
     > => {
-      if (!activeOutbound) {
+      const outbound = getOutboundForAccount(accountId);
+      if (!outbound) {
         return { ok: false, error: "Not connected" };
       }
       try {
         const account = resolveAccount(cfg ?? {}, accountId ?? undefined);
         const channelId = await resolveChannelId(to, account);
-        const sent = activeOutbound.sendMessage(channelId, text, replyToId);
+        const sent = outbound.sendMessage(channelId, text, replyToId);
         if (!sent) {
           return { ok: false, error: "Failed to send message" };
         }
@@ -306,19 +303,21 @@ const typePlugin = {
     }): Promise<
       { ok: true; channel: string } | { ok: false; error: string }
     > => {
-      if (!activeOutbound) {
+      const outbound = getOutboundForAccount(accountId);
+      if (!outbound) {
         return { ok: false, error: "Not connected" };
       }
       try {
         const account = resolveAccount(cfg ?? {}, accountId ?? undefined);
+        const accountContext = getAccountContextForAccount(accountId);
         const resolvedWsUrl =
-          account.wsUrl === DEFAULT_TYPE_WS_URL && activeAccountContext?.wsUrl
-            ? activeAccountContext.wsUrl
+          account.wsUrl === DEFAULT_TYPE_WS_URL && accountContext?.wsUrl
+            ? accountContext.wsUrl
             : account.wsUrl;
         const uploadAccount = {
-          token: account.token || activeAccountContext?.token || "",
+          token: account.token || accountContext?.token || "",
           wsUrl: resolvedWsUrl,
-          agentId: account.agentId || activeAccountContext?.agentId || "",
+          agentId: account.agentId || accountContext?.agentId || "",
         };
         const effectiveMediaLocalRoots = resolveEffectiveMediaLocalRoots({
           configuredRoots: account.mediaLocalRoots,
@@ -334,7 +333,7 @@ const typePlugin = {
         });
 
         const caption = text.trim().length > 0 ? text : "Sent an attachment.";
-        const sent = activeOutbound.sendMessage(channelId, caption, replyToId, [
+        const sent = outbound.sendMessage(channelId, caption, replyToId, [
           uploadedMedia.fileId,
         ]);
         if (!sent) {
@@ -361,16 +360,18 @@ const typePlugin = {
       abortSignal: AbortSignal;
       log?: { info: (msg: string) => void; error: (msg: string) => void };
     }) => {
-      if (connectionState !== "disconnected") {
+      const accountId = ctx.accountId;
+      const state = getAccountState(accountId);
+
+      if (state.connectionState !== "disconnected") {
         ctx.log?.info(
-          `Type connection already ${connectionState}, skipping duplicate startAccount`,
+          `[type] Account "${accountId}" already ${state.connectionState}, skipping duplicate startAccount`,
         );
         return;
       }
-      connectionState = "connecting";
+      state.connectionState = "connecting";
 
-      const runtime = pluginRuntime ?? ctx.runtime;
-      const accountId = ctx.accountId;
+      const runtime = getPluginRuntime() ?? ctx.runtime;
       const accountConfig = resolveAccount(ctx.cfg, accountId ?? undefined);
       const token = ctx.account.token || accountConfig.token;
       const wsUrl = ctx.account.wsUrl || accountConfig.wsUrl;
@@ -380,15 +381,17 @@ const typePlugin = {
         token,
         wsUrl,
         onMessage: (event) => {
+          if (state.connection !== connection) return;
+
           if (event.type === "success") {
             const reqType = (event as { requestType?: string }).requestType;
-            console.log(`[type] Server success: ${reqType}`);
+            console.log(`[type:${accountId}] Server success: ${reqType}`);
             if (reqType === "stream_start") {
               const messageId =
                 "messageId" in event && typeof event.messageId === "string"
                   ? event.messageId
                   : undefined;
-              resolveStreamAck(messageId);
+              resolveStreamAck(messageId, accountId);
             }
             return;
           }
@@ -400,7 +403,7 @@ const typePlugin = {
               messageId?: string;
             };
             console.error(
-              `[type] Server error: ${errEvt.requestType} — ${errEvt.error}`,
+              `[type:${accountId}] Server error: ${errEvt.requestType} — ${errEvt.error}`,
               errEvt.details ?? "",
             );
             const error = new Error(errEvt.error ?? "stream request failed");
@@ -411,16 +414,21 @@ const typePlugin = {
                 errEvt.requestType === "stream_finish" ||
                 errEvt.requestType === "stream_heartbeat")
             ) {
-              failStreamSession(errEvt.messageId, errEvt.requestType, error);
+              failStreamSession(
+                errEvt.messageId,
+                errEvt.requestType,
+                error,
+                accountId,
+              );
             }
             if (errEvt.requestType === "stream_start") {
-              rejectStreamAck(error, errEvt.messageId);
+              rejectStreamAck(error, errEvt.messageId, accountId);
             }
             return;
           }
 
           if (event.type !== "message") return;
-          if (!activeOutbound) return;
+          if (!state.outbound) return;
 
           const acknowledged = connection.send({
             type: "trigger_received",
@@ -429,7 +437,7 @@ const typePlugin = {
           });
           if (!acknowledged) {
             console.error(
-              `[type] Failed to send trigger_received ack for ${event.messageId}`,
+              `[type:${accountId}] Failed to send trigger_received ack for ${event.messageId}`,
             );
             return;
           }
@@ -440,34 +448,40 @@ const typePlugin = {
             account: { token, wsUrl, agentId },
             cfg: ctx.cfg,
             runtime,
-            outbound: activeOutbound,
+            outbound: state.outbound,
             log: ctx.log,
           });
         },
         onConnected: () => {
-          connectionState = "connected";
-          ctx.log?.info("[type] WebSocket connected");
+          if (state.connection !== connection) return;
+          state.connectionState = "connected";
+          ctx.log?.info(`[type:${accountId}] WebSocket connected`);
         },
         onDisconnected: () => {
-          connectionState = "disconnected";
-          ctx.log?.info("[type] WebSocket disconnected");
-          failAllStreamSessions(new Error("WebSocket disconnected"));
+          if (state.connection !== connection) return;
+          state.connectionState = "disconnected";
+          ctx.log?.info(`[type:${accountId}] WebSocket disconnected`);
+          failStreamSessionsForAccount(
+            accountId,
+            new Error("WebSocket disconnected"),
+          );
         },
       });
 
-      _activeConnection = connection;
-      activeOutbound = new TypeOutboundHandler(connection);
-      activeAccountContext = { token, wsUrl, agentId };
+      state.connection = connection;
+      state.outbound = new TypeOutboundHandler(connection);
+      state.context = { token, wsUrl, agentId };
 
       connection.connect();
 
       await new Promise<void>((resolve) => {
         ctx.abortSignal.addEventListener("abort", () => {
-          connectionState = "disconnected";
+          state.connectionState = "disconnected";
           connection.disconnect();
-          _activeConnection = null;
-          activeOutbound = null;
-          activeAccountContext = null;
+          state.connection = null;
+          state.outbound = null;
+          state.context = null;
+          clearAccountState(accountId);
           resolve();
         });
       });
@@ -487,7 +501,7 @@ const plugin = {
     runtime: PluginRuntime;
     registerChannel: (opts: { plugin: typeof typePlugin }) => void;
   }) {
-    pluginRuntime = api.runtime;
+    setPluginRuntime(api.runtime);
     api.registerChannel({ plugin: typePlugin });
   },
 };
