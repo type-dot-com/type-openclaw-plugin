@@ -8,6 +8,7 @@
 
 import { z } from "zod";
 import { resolveApiOriginFromWsUrl } from "./apiOrigin.js";
+import { cleanupScope, runInScope } from "./askUserState.js";
 import type { TypeMessageEvent } from "./protocol.js";
 import { ReplyTextProcessor } from "./replyTextProcessor.js";
 import { type StreamOutbound, StreamSession } from "./streamSession.js";
@@ -665,68 +666,87 @@ export function handleInboundMessage(params: {
 
       const session = new StreamSession(outbound, msg.messageId);
       trackSession(msg.messageId, session);
-      const processor = new ReplyTextProcessor(session, () =>
-        markSessionAwaitingAck(msg.messageId),
+      const processor = new ReplyTextProcessor(
+        session,
+        () => markSessionAwaitingAck(msg.messageId),
+        msg.messageId,
       );
 
-      void runtime.channel.reply
-        .dispatchReplyWithBufferedBlockDispatcher({
-          ctx: ctxPayload,
-          cfg,
-          dispatcherOptions: {
-            deliver: async (
-              payload: { text?: string },
-              info: Record<string, unknown>,
-            ) => {
-              if (info.kind !== "tool") return;
-              if (!payload.text) {
-                processor.markToolEventSeen();
-                return;
+      runInScope(msg.messageId, () => {
+        try {
+          void runtime.channel.reply
+            .dispatchReplyWithBufferedBlockDispatcher({
+              ctx: ctxPayload,
+              cfg,
+              dispatcherOptions: {
+                deliver: async (
+                  payload: { text?: string },
+                  info: Record<string, unknown>,
+                ) => {
+                  if (info.kind !== "tool") return;
+                  if (!payload.text) {
+                    processor.markToolEventSeen();
+                    return;
+                  }
+                  const intercepted = await processor.handleToolDelivery(
+                    payload.text,
+                    {
+                      toolCallId: resolveToolCallId(info),
+                    },
+                  );
+                  if (intercepted) return;
+                },
+                onSkip: (_payload, info) => {
+                  console.log(`[type] Reply skipped: ${JSON.stringify(info)}`);
+                },
+                onError: (err, info) => {
+                  console.error(
+                    `[type] Reply error: ${err} ${JSON.stringify(info)}`,
+                  );
+                },
+              },
+              replyOptions: {
+                disableBlockStreaming: true,
+                onPartialReply: (payload: { text?: string }) => {
+                  if (!payload.text || session.isFailed) return;
+                  processor.processText(payload.text, false);
+                },
+              },
+            })
+            .then(() => {
+              processor.flush();
+              cleanupScope(msg.messageId);
+              const { needsReply, needsReplyQuestion } = processor.result;
+              if (session.isStarted || needsReply) {
+                session.finish(
+                  needsReply
+                    ? { needsReply: true, question: needsReplyQuestion }
+                    : undefined,
+                );
               }
-              const intercepted = processor.handleToolDelivery(payload.text, {
-                toolCallId: resolveToolCallId(info),
-              });
-              if (intercepted) return;
-            },
-            onSkip: (_payload, info) => {
-              console.log(`[type] Reply skipped: ${JSON.stringify(info)}`);
-            },
-            onError: (err, info) => {
+              markSessionDispatchComplete(msg.messageId);
+            })
+            .catch((err: unknown) => {
+              cleanupScope(msg.messageId);
               console.error(
-                `[type] Reply error: ${err} ${JSON.stringify(info)}`,
+                `[type] Stream dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
               );
-            },
-          },
-          replyOptions: {
-            disableBlockStreaming: true,
-            onPartialReply: (payload: { text?: string }) => {
-              if (!payload.text || session.isFailed) return;
-              processor.processText(payload.text, false);
-            },
-          },
-        })
-        .then(() => {
-          processor.flush();
-          const { needsReply, needsReplyQuestion } = processor.result;
-          if (session.isStarted || needsReply) {
-            session.finish(
-              needsReply
-                ? { needsReply: true, question: needsReplyQuestion }
-                : undefined,
-            );
-          }
-          markSessionDispatchComplete(msg.messageId);
-        })
-        .catch((err: unknown) => {
-          console.error(
-            `[type] Stream dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
+              processor.flush();
+              if (session.isStarted) {
+                session.finish();
+              }
+              markSessionDispatchComplete(msg.messageId);
+            });
+        } catch (syncErr) {
+          cleanupScope(msg.messageId);
           processor.flush();
           if (session.isStarted) {
             session.finish();
           }
           markSessionDispatchComplete(msg.messageId);
-        });
+          throw syncErr;
+        }
+      });
     } catch (err) {
       log?.error(
         `[type] Message dispatch error: ${err instanceof Error ? err.message : String(err)}`,

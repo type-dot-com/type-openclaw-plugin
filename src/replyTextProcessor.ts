@@ -6,7 +6,7 @@
  * messageHandler.ts to reduce nesting and isolate testable logic.
  */
 
-import { consumePendingAskUserQuestion } from "./askUserState.js";
+import { waitForPendingAskUserQuestion } from "./askUserState.js";
 import type { StreamSession } from "./streamSession.js";
 import { createToolEvents, parseToolText } from "./toolEvents.js";
 
@@ -28,6 +28,7 @@ export interface ReplyTextResult {
 export class ReplyTextProcessor {
   readonly #session: StreamSession;
   readonly #onSessionStarted: () => void;
+  readonly #scopeId: string | undefined;
 
   #pendingCandidate: string | null = null;
   #noReplySuppressed = false;
@@ -35,9 +36,14 @@ export class ReplyTextProcessor {
   #needsReply = false;
   #needsReplyQuestion: string | undefined;
 
-  constructor(session: StreamSession, onSessionStarted: () => void) {
+  constructor(
+    session: StreamSession,
+    onSessionStarted: () => void,
+    scopeId?: string,
+  ) {
     this.#session = session;
     this.#onSessionStarted = onSessionStarted;
+    this.#scopeId = scopeId;
   }
 
   get result(): ReplyTextResult {
@@ -78,7 +84,10 @@ export class ReplyTextProcessor {
    * ask_user that was intercepted (caller should skip normal tool
    * forwarding).
    */
-  handleToolDelivery(text: string, opts?: { toolCallId?: string }): boolean {
+  async handleToolDelivery(
+    text: string,
+    opts?: { toolCallId?: string },
+  ): Promise<boolean> {
     this.markToolEventSeen();
     if (this.#session.isFailed) return false;
 
@@ -95,9 +104,13 @@ export class ReplyTextProcessor {
       const outputIsToolName =
         normalizedName === "tool" &&
         ASK_USER_TOOL_NAMES.has(trimmedOutput.toLowerCase());
+      // OpenClaw calls deliver before execute, so the pending question
+      // may not be stored yet. Wait briefly for execute to catch up.
       this.#needsReplyQuestion =
-        consumePendingAskUserQuestion(opts?.toolCallId) ||
-        (outputIsToolName ? undefined : trimmedOutput || undefined);
+        (await waitForPendingAskUserQuestion(
+          opts?.toolCallId,
+          this.#scopeId,
+        )) || (outputIsToolName ? undefined : trimmedOutput || undefined);
       this.#session.resetTextAccumulator();
       return true;
     }

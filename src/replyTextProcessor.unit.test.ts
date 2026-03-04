@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { setPendingAskUserQuestion } from "./askUserState.js";
+import {
+  cleanupScope,
+  runInScope,
+  setPendingAskUserQuestion,
+} from "./askUserState.js";
 import { ReplyTextProcessor } from "./replyTextProcessor.js";
 import type { StreamSession } from "./streamSession.js";
 
@@ -105,7 +109,7 @@ describe("ReplyTextProcessor", () => {
       expect(session.tokens).toHaveLength(0);
     });
 
-    test("accepts NO (short sentinel) only after tool event", () => {
+    test("accepts NO (short sentinel) only after tool event", async () => {
       const session = createMockSession();
       const processor = new ReplyTextProcessor(session, () => {});
 
@@ -116,7 +120,7 @@ describe("ReplyTextProcessor", () => {
       // After a tool event, "NO" becomes a sentinel
       const session2 = createMockSession();
       const processor2 = new ReplyTextProcessor(session2, () => {});
-      processor2.handleToolDelivery("search: results here");
+      await processor2.handleToolDelivery("search: results here");
       processor2.processText("NO", true);
       expect(session2.tokens).toHaveLength(0);
     });
@@ -204,51 +208,127 @@ describe("ReplyTextProcessor", () => {
   });
 
   describe("handleToolDelivery", () => {
-    test("detects ask_user tool and sets needsReply", () => {
+    test("detects ask_user tool and sets needsReply", async () => {
+      const scope = "msg-test-keyed";
+      await runInScope(scope, async () => {
+        try {
+          const session = createMockSession();
+          const processor = new ReplyTextProcessor(session, () => {}, scope);
+
+          // Store a pending question via the ask_user state bridge
+          setPendingAskUserQuestion("test-key", "What do you think?");
+
+          const intercepted = await processor.handleToolDelivery(
+            "ask_user: some output",
+            {
+              toolCallId: "test-key",
+            },
+          );
+          expect(intercepted).toBe(true);
+          expect(processor.result.needsReply).toBe(true);
+          expect(processor.result.needsReplyQuestion).toBe(
+            "What do you think?",
+          );
+        } finally {
+          cleanupScope(scope);
+        }
+      });
+    });
+
+    test("falls back to scoped FIFO pending question without matching toolCallId", async () => {
+      const scope = "msg-test-fifo";
+      await runInScope(scope, async () => {
+        try {
+          const session = createMockSession();
+          const processor = new ReplyTextProcessor(session, () => {}, scope);
+
+          setPendingAskUserQuestion("pending-key", "What do you think?");
+
+          const intercepted = await processor.handleToolDelivery(
+            "ask_user: fallback?",
+          );
+          expect(intercepted).toBe(true);
+          expect(processor.result.needsReply).toBe(true);
+          expect(processor.result.needsReplyQuestion).toBe(
+            "What do you think?",
+          );
+        } finally {
+          cleanupScope(scope);
+        }
+      });
+    });
+
+    test("waits for execute to populate question when deliver fires first", async () => {
+      const scope = "msg-test-timing";
+      await runInScope(scope, async () => {
+        try {
+          const session = createMockSession();
+          const processor = new ReplyTextProcessor(session, () => {}, scope);
+
+          // Simulate OpenClaw's ordering: deliver fires first, execute follows ~3ms later
+          const deliveryPromise = processor.handleToolDelivery("Ask User");
+          setTimeout(() => {
+            setPendingAskUserQuestion("delayed-key", "Delayed question?");
+          }, 5);
+
+          const intercepted = await deliveryPromise;
+          expect(intercepted).toBe(true);
+          expect(processor.result.needsReply).toBe(true);
+          expect(processor.result.needsReplyQuestion).toBe("Delayed question?");
+        } finally {
+          cleanupScope(scope);
+        }
+      });
+    });
+
+    test("FIFO fallback does not consume questions from a different scope", async () => {
+      // Simulate agent A storing a question in scope A
+      runInScope("msg-agent-a", () => {
+        setPendingAskUserQuestion("tool-a", "Agent A question");
+      });
+
+      try {
+        // Simulate agent B trying to consume without toolCallId in scope B
+        // Use "Ask User" (no colon/question) to match OpenClaw's stripped format
+        const scopeB = "msg-agent-b";
+        await runInScope(scopeB, async () => {
+          try {
+            const session = createMockSession();
+            const processor = new ReplyTextProcessor(session, () => {}, scopeB);
+
+            const intercepted = await processor.handleToolDelivery("Ask User");
+
+            expect(intercepted).toBe(true);
+            expect(processor.result.needsReply).toBe(true);
+            // Should NOT have consumed agent A's question
+            expect(processor.result.needsReplyQuestion).toBeUndefined();
+          } finally {
+            cleanupScope(scopeB);
+          }
+        });
+      } finally {
+        cleanupScope("msg-agent-a");
+      }
+    });
+
+    test("returns false for non-ask_user tools", async () => {
       const session = createMockSession();
       const processor = new ReplyTextProcessor(session, () => {});
 
-      // Store a pending question via the ask_user state bridge
-      setPendingAskUserQuestion("test-key", "What do you think?");
-
-      const intercepted = processor.handleToolDelivery(
-        "ask_user: some output",
-        {
-          toolCallId: "test-key",
-        },
+      const intercepted = await processor.handleToolDelivery(
+        "search: query results",
       );
-      expect(intercepted).toBe(true);
-      expect(processor.result.needsReply).toBe(true);
-      expect(processor.result.needsReplyQuestion).toBe("What do you think?");
-    });
-
-    test("does not consume pending question without matching toolCallId", () => {
-      const session = createMockSession();
-      const processor = new ReplyTextProcessor(session, () => {});
-
-      setPendingAskUserQuestion("pending-key", "What do you think?");
-
-      const intercepted = processor.handleToolDelivery("ask_user: fallback?");
-      expect(intercepted).toBe(true);
-      expect(processor.result.needsReply).toBe(true);
-      expect(processor.result.needsReplyQuestion).toBe("fallback?");
-    });
-
-    test("returns false for non-ask_user tools", () => {
-      const session = createMockSession();
-      const processor = new ReplyTextProcessor(session, () => {});
-
-      const intercepted = processor.handleToolDelivery("search: query results");
       expect(intercepted).toBe(false);
       expect(processor.result.needsReply).toBe(false);
       expect(session.toolEvents.length).toBeGreaterThan(0);
     });
 
-    test("returns false when session is failed", () => {
+    test("returns false when session is failed", async () => {
       const session = createMockSession({ isFailed: true });
       const processor = new ReplyTextProcessor(session, () => {});
 
-      const intercepted = processor.handleToolDelivery("ask_user: question");
+      const intercepted =
+        await processor.handleToolDelivery("ask_user: question");
       expect(intercepted).toBe(false);
     });
   });

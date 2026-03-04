@@ -1,6 +1,6 @@
 {
   "name": "@type-dot-com/type-openclaw-plugin",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "OpenClaw channel plugin for Type — the agent-native team chat platform",
   "type": "module",
   "main": "src/index.ts",
