@@ -78,20 +78,11 @@ function parseSessionKey(key: string): {
   };
 }
 
-function findKeyByMessageId(messageId: string): string | undefined {
-  const suffix = `${KEY_SEP}${messageId}`;
-  for (const key of sessionsByKey.keys()) {
-    if (key.endsWith(suffix)) return key;
-  }
-  return undefined;
-}
-
 function resolveCompositeKey(
   messageId?: string,
   accountId?: string,
 ): string | undefined {
   if (messageId && accountId) return sessionKey(accountId, messageId);
-  if (messageId) return findKeyByMessageId(messageId);
   return undefined;
 }
 
@@ -605,8 +596,10 @@ export function failStreamSessionsForAccount(
   const prefix = `${accountId}${KEY_SEP}`;
   for (const key of [...sessionsByKey.keys()]) {
     if (key.startsWith(prefix)) {
-      const { messageId } = parseSessionKey(key);
-      failStreamSession(messageId, "stream_start", error, accountId);
+      const session = sessionsByKey.get(key);
+      if (session) {
+        session.failFromServer("stream_start", error);
+      }
       untrackSession(key);
     }
   }
@@ -859,7 +852,7 @@ export function handleInboundMessage(params: {
           if (session.isStarted) {
             session.finish();
           }
-          markSessionDispatchComplete(msg.messageId);
+          markSessionDispatchComplete(key);
           throw syncErr;
         }
       });

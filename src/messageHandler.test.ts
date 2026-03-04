@@ -121,15 +121,15 @@ describe("messageHandler stream ack routing", () => {
     expect(started).toEqual(["msg_1", "msg_2"]);
     expect(tokenChunksByMessage.size).toBe(0);
 
-    resolveStreamAck("msg_unknown");
+    resolveStreamAck("msg_unknown", "acct_1");
     expect(tokenChunksByMessage.get("msg_1")).toBeUndefined();
     expect(tokenChunksByMessage.get("msg_2")).toBeUndefined();
 
-    resolveStreamAck("msg_2");
+    resolveStreamAck("msg_2", "acct_1");
     expect(tokenChunksByMessage.get("msg_1")).toBeUndefined();
     expect(tokenChunksByMessage.get("msg_2")).toEqual(["Second reply"]);
 
-    resolveStreamAck("msg_1");
+    resolveStreamAck("msg_1", "acct_1");
     expect(tokenChunksByMessage.get("msg_1")).toEqual(["First reply"]);
 
     dispatchResolvers.get("msg_1")?.();
@@ -196,7 +196,7 @@ describe("messageHandler stream ack routing", () => {
 
     expect(calls).toEqual([{ kind: "start", value: "msg_late_ack" }]);
 
-    resolveStreamAck("msg_late_ack");
+    resolveStreamAck("msg_late_ack", "acct_1");
 
     expect(calls).toEqual([
       { kind: "start", value: "msg_late_ack" },
@@ -375,7 +375,7 @@ describe("messageHandler stream ack routing", () => {
 
     expect(calls).toEqual([{ kind: "start", value: "msg_split_sentinel" }]);
 
-    resolveStreamAck("msg_split_sentinel");
+    resolveStreamAck("msg_split_sentinel", "acct_1");
 
     expect(calls).toEqual([
       { kind: "start", value: "msg_split_sentinel" },
@@ -437,7 +437,7 @@ describe("messageHandler stream ack routing", () => {
 
     expect(calls).toEqual([{ kind: "start", value: "msg_legit_no" }]);
 
-    resolveStreamAck("msg_legit_no");
+    resolveStreamAck("msg_legit_no", "acct_1");
 
     expect(calls).toEqual([
       { kind: "start", value: "msg_legit_no" },

@@ -15,11 +15,16 @@ Connect OpenClaw agents to Type team chat via a duplex WebSocket.
   },
   "channels": {
     "type": {
-      "enabled": true,
-      "token": "ta_your_agent_token",
-      "wsUrl": "wss://your-type-server/api/agents/ws",
-      "agentId": "agent_...",
-      "mediaLocalRoots": ["/home/daytona/.openclaw/workspace"]
+      "accounts": {
+        "default": {
+          "enabled": true,
+          "token": "ta_your_agent_token",
+          "wsUrl": "wss://your-type-server/api/agents/ws",
+          "agentId": "agent_...",
+          "capabilities": ["media"],
+          "mediaLocalRoots": ["/home/daytona/.openclaw/workspace"]
+        }
+      }
     }
   }
 }
@@ -27,12 +32,38 @@ Connect OpenClaw agents to Type team chat via a duplex WebSocket.
 
 **`agents.defaults.verboseDefault`** must be set to `"on"`. This enables `onToolResult` callbacks so tool outputs can be streamed to Type.
 
-| Field | Required | Description |
+#### Multi-account support
+
+Each key under `accounts` is a named account that maintains its own WebSocket connection to a different Type agent. Use `bindings` to route each account to the appropriate OpenClaw agent workspace:
+
+```json
+{
+  "channels": {
+    "type": {
+      "accounts": {
+        "default": { "enabled": true, "token": "ta_...", "wsUrl": "wss://...", "agentId": "..." },
+        "code-agent": { "enabled": true, "token": "ta_...", "wsUrl": "wss://...", "agentId": "..." }
+      }
+    }
+  },
+  "bindings": [
+    { "agentId": "main", "match": { "channel": "type", "accountId": "default" } },
+    { "agentId": "code", "match": { "channel": "type", "accountId": "code-agent" } }
+  ]
+}
+```
+
+Each account is fully isolated — sessions, ack tracking, and disconnect handling are scoped per account, so one account disconnecting does not affect others.
+
+| Account Field | Required | Description |
 |-------|----------|-------------|
 | `token` | Yes | Agent token from Type UI (`ta_`-prefixed) |
 | `wsUrl` | Yes | Type server WebSocket endpoint |
 | `agentId` | Yes | Agent ID from Type (shown in agent builder) |
+| `capabilities` | No | Array of capabilities (e.g. `["media"]`) |
 | `mediaLocalRoots` | Recommended | Allowed local directories for `sendMedia` local file paths |
+
+> Legacy single-account config (flat fields at the `type` level) is still supported but deprecated.
 
 ### 2. Plugin Registration
 
@@ -52,7 +83,7 @@ Add to `plugins.load.paths` in your OpenClaw config:
 
 ### Connection
 
-The plugin maintains a single duplex WebSocket to the Type server. All communication flows over this one connection:
+The plugin maintains a duplex WebSocket per account to the Type server. All communication for an account flows over its connection:
 
 - **Type -> Agent**: message triggers, ping keepalive
 - **Agent -> Type**: pong, streaming responses, proactive messages

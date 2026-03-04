@@ -16,6 +16,7 @@ import {
   getAccountState,
   getOutboundForAccount,
   getPluginRuntime,
+  resolveEffectiveAccountId,
   setPluginRuntime,
 } from "./accountState.js";
 import { agentTools } from "./agentTools.js";
@@ -264,12 +265,13 @@ const typePlugin = {
     }): Promise<
       { ok: true; channel: string } | { ok: false; error: string }
     > => {
-      const outbound = getOutboundForAccount(accountId);
+      const effectiveAccountId = resolveEffectiveAccountId(accountId);
+      const outbound = getOutboundForAccount(effectiveAccountId);
       if (!outbound) {
         return { ok: false, error: "Not connected" };
       }
       try {
-        const account = resolveAccount(cfg ?? {}, accountId ?? undefined);
+        const account = resolveAccount(cfg ?? {}, effectiveAccountId);
         const channelId = await resolveChannelId(to, account);
         const sent = outbound.sendMessage(channelId, text, replyToId);
         if (!sent) {
@@ -303,13 +305,14 @@ const typePlugin = {
     }): Promise<
       { ok: true; channel: string } | { ok: false; error: string }
     > => {
-      const outbound = getOutboundForAccount(accountId);
+      const effectiveAccountId = resolveEffectiveAccountId(accountId);
+      const outbound = getOutboundForAccount(effectiveAccountId);
       if (!outbound) {
         return { ok: false, error: "Not connected" };
       }
       try {
-        const account = resolveAccount(cfg ?? {}, accountId ?? undefined);
-        const accountContext = getAccountContextForAccount(accountId);
+        const account = resolveAccount(cfg ?? {}, effectiveAccountId);
+        const accountContext = getAccountContextForAccount(effectiveAccountId);
         const resolvedWsUrl =
           account.wsUrl === DEFAULT_TYPE_WS_URL && accountContext?.wsUrl
             ? accountContext.wsUrl
@@ -362,6 +365,13 @@ const typePlugin = {
     }) => {
       const accountId = ctx.accountId;
       const state = getAccountState(accountId);
+
+      if (ctx.abortSignal.aborted) {
+        ctx.log?.info(
+          `[type] Account "${accountId}" abort signal already fired, skipping startAccount`,
+        );
+        return;
+      }
 
       if (state.connectionState !== "disconnected") {
         ctx.log?.info(
@@ -477,6 +487,10 @@ const typePlugin = {
       await new Promise<void>((resolve) => {
         ctx.abortSignal.addEventListener("abort", () => {
           state.connectionState = "disconnected";
+          failStreamSessionsForAccount(
+            accountId,
+            new Error("Account shutdown"),
+          );
           connection.disconnect();
           state.connection = null;
           state.outbound = null;

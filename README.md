@@ -27,28 +27,56 @@ Add the plugin path to your OpenClaw config (`~/.openclaw/openclaw.json`):
 }
 ```
 
-Then configure the channel:
+Then configure the channel. The plugin supports multiple accounts, where each account connects to a different Type agent:
 
 ```json
 {
   "channels": {
     "type": {
-      "enabled": true,
-      "token": "ta_your_agent_token",
-      "wsUrl": "wss://your-type-server/api/agents/ws",
-      "agentId": "agent_..."
+      "accounts": {
+        "default": {
+          "enabled": true,
+          "token": "ta_your_agent_token",
+          "wsUrl": "wss://your-type-server/api/agents/ws",
+          "agentId": "agent_...",
+          "capabilities": ["media"]
+        },
+        "code-agent": {
+          "enabled": true,
+          "token": "ta_another_token",
+          "wsUrl": "wss://your-type-server/api/agents/ws",
+          "agentId": "agent_...",
+          "capabilities": ["media"]
+        }
+      }
     }
   }
 }
 ```
 
-| Field | Required | Description |
+Each account key (e.g. `"default"`, `"code-agent"`) names a separate WebSocket connection. Use `bindings` to route each account to a specific OpenClaw agent:
+
+```json
+{
+  "bindings": [
+    { "agentId": "main", "match": { "channel": "type", "accountId": "default" } },
+    { "agentId": "code", "match": { "channel": "type", "accountId": "code-agent" } }
+  ]
+}
+```
+
+| Account Field | Required | Description |
 |-------|----------|-------------|
+| `enabled` | No | Whether this account's WebSocket connection is active (defaults to `true`) |
 | `token` | Yes | Agent token from Type UI (`ta_`-prefixed) |
 | `wsUrl` | Yes | Type server WebSocket endpoint |
 | `agentId` | Yes | Agent ID from Type (shown in agent builder) |
+| `capabilities` | No | Array of capabilities (e.g. `["media"]`) |
+| `mediaLocalRoots` | No | Allowed local directories for `sendMedia` local file paths |
 
 > **Note:** Set `agents.defaults.verboseDefault` to `"on"` in your OpenClaw config to enable streaming via `onPartialReply` callbacks.
+>
+> Legacy single-account config (flat `token`/`wsUrl`/`agentId` at the `type` level) is still supported but deprecated.
 
 ## Documentation
 

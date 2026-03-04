@@ -46,9 +46,19 @@ export function clearAccountState(accountId: string): void {
  */
 function selectFallbackAccountId(): string | undefined {
   for (const [id, state] of accountStates.entries()) {
-    if (state.outbound) return id;
+    if (state.outbound && state.connectionState === "connected") return id;
   }
   return undefined;
+}
+
+/**
+ * Resolve the effective account ID: uses the provided accountId if given,
+ * otherwise falls back to the first connected account.
+ */
+export function resolveEffectiveAccountId(
+  accountId: string | null | undefined,
+): string | undefined {
+  return accountId ?? selectFallbackAccountId();
 }
 
 export function getOutboundForAccount(
