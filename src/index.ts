@@ -464,6 +464,21 @@ const typePlugin = {
             return;
           }
 
+          if (event.type === "stream_cancel") {
+            rejectStreamAck(
+              new Error("Cancelled by user"),
+              event.messageId,
+              accountId,
+            );
+            failStreamSession(
+              event.messageId,
+              "stream_event",
+              new Error("Cancelled by user"),
+              accountId,
+            );
+            return;
+          }
+
           if (event.type !== "message") return;
           if (!state.outbound) return;
 

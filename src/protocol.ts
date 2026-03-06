@@ -103,18 +103,25 @@ const typeErrorEventSchema = z.object({
   details: z.unknown().optional(),
 });
 
+const typeStreamCancelEventSchema = z.object({
+  type: z.literal("stream_cancel"),
+  messageId: z.string(),
+});
+
 export const typeInboundEventSchema = z.discriminatedUnion("type", [
   typeMessageEventSchema,
   typePingEventSchema,
   typePongEventSchema,
   typeSuccessEventSchema,
   typeErrorEventSchema,
+  typeStreamCancelEventSchema,
 ]);
 
 export type TypeMessageEvent = z.infer<typeof typeMessageEventSchema>;
 export type TypePingEvent = z.infer<typeof typePingEventSchema>;
 export type TypeSuccessEvent = z.infer<typeof typeSuccessEventSchema>;
 export type TypeErrorEvent = z.infer<typeof typeErrorEventSchema>;
+export type TypeStreamCancelEvent = z.infer<typeof typeStreamCancelEventSchema>;
 export type TypeInboundEvent = z.infer<typeof typeInboundEventSchema>;
 
 // ---------------------------------------------------------------------------
