@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   handleInboundMessage,
   type PluginRuntime,
+  pauseStreamSessionsForAccount,
   resolveStreamAck,
+  resumeStreamSessionsForAccount,
 } from "./messageHandler.js";
 import type { TypeMessageEvent } from "./protocol.js";
 import type { StreamOutbound } from "./streamSession.js";
@@ -202,6 +204,91 @@ describe("messageHandler stream ack routing", () => {
       { kind: "start", value: "msg_late_ack" },
       { kind: "token", value: "msg_late_ack:Late ack reply" },
       { kind: "finish", value: "msg_late_ack" },
+    ]);
+  });
+
+  test("re-sends stream_start after reconnect before the initial ack arrives", async () => {
+    const calls: Array<{ kind: "start" | "token" | "finish"; value: string }> =
+      [];
+    let resolveDispatch: (() => void) | null = null;
+
+    const outbound: StreamOutbound = {
+      startStream(messageId: string): boolean {
+        calls.push({ kind: "start", value: messageId });
+        return true;
+      },
+      streamToken(messageId: string, text: string): boolean {
+        calls.push({ kind: "token", value: `${messageId}:${text}` });
+        return true;
+      },
+      streamEvent(): boolean {
+        return true;
+      },
+      streamHeartbeat(): boolean {
+        return true;
+      },
+      finishStream(messageId: string): boolean {
+        calls.push({ kind: "finish", value: messageId });
+        return true;
+      },
+    };
+
+    const runtime: PluginRuntime = {
+      channel: {
+        reply: {
+          finalizeInboundContext(
+            ctx: Record<string, unknown>,
+          ): Record<string, unknown> {
+            return ctx;
+          },
+          dispatchReplyWithBufferedBlockDispatcher(opts): Promise<void> {
+            if (hasOnPartialReply(opts.replyOptions)) {
+              opts.replyOptions.onPartialReply({ text: "Reconnect reply" });
+            }
+
+            return new Promise<void>((resolve) => {
+              resolveDispatch = resolve;
+            });
+          },
+        },
+      },
+    };
+
+    handleInboundMessage({
+      msg: createMessage("msg_reconnect"),
+      accountId: "acct_1",
+      cfg: {},
+      runtime,
+      outbound,
+    });
+
+    expect(calls).toEqual([{ kind: "start", value: "msg_reconnect" }]);
+
+    pauseStreamSessionsForAccount("acct_1");
+    resumeStreamSessionsForAccount("acct_1");
+
+    expect(calls).toEqual([
+      { kind: "start", value: "msg_reconnect" },
+      { kind: "start", value: "msg_reconnect" },
+    ]);
+
+    resolveStreamAck("msg_reconnect", "acct_1");
+
+    expect(calls).toEqual([
+      { kind: "start", value: "msg_reconnect" },
+      { kind: "start", value: "msg_reconnect" },
+      { kind: "token", value: "msg_reconnect:Reconnect reply" },
+    ]);
+
+    resolveDispatch?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(calls).toEqual([
+      { kind: "start", value: "msg_reconnect" },
+      { kind: "start", value: "msg_reconnect" },
+      { kind: "token", value: "msg_reconnect:Reconnect reply" },
+      { kind: "finish", value: "msg_reconnect" },
     ]);
   });
 

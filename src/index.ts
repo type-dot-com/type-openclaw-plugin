@@ -33,14 +33,23 @@ import {
   failStreamSessionsForAccount,
   handleInboundMessage,
   type PluginRuntime,
+  pauseStreamSessionsForAccount,
   rejectStreamAck,
   resolveStreamAck,
+  resumeStreamSessionsForAccount,
 } from "./messageHandler.js";
 import { TypeOutboundHandler } from "./outbound.js";
 import {
   isLikelyTypeTargetId,
   normalizeTypeTarget,
 } from "./targetNormalization.js";
+import {
+  captureException,
+  initializeTelemetry,
+  teardownTelemetry,
+} from "./telemetry.js";
+
+const STREAM_ALREADY_ACTIVE_ERROR = "Stream already active for this message";
 
 function isPathWithinRoot(candidatePath: string, rootPath: string): boolean {
   const relative = path.relative(rootPath, candidatePath);
@@ -387,6 +396,8 @@ const typePlugin = {
       const wsUrl = ctx.account.wsUrl || accountConfig.wsUrl;
       const agentId = accountConfig.agentId;
 
+      initializeTelemetry({ token, wsUrl, agentId });
+
       const connection = new TypeConnection({
         token,
         wsUrl,
@@ -412,11 +423,27 @@ const typePlugin = {
               details?: unknown;
               messageId?: string;
             };
+            if (
+              errEvt.requestType === "stream_start" &&
+              errEvt.error === STREAM_ALREADY_ACTIVE_ERROR
+            ) {
+              resolveStreamAck(errEvt.messageId, accountId);
+              return;
+            }
+
             console.error(
               `[type:${accountId}] Server error: ${errEvt.requestType} — ${errEvt.error}`,
               errEvt.details ?? "",
             );
             const error = new Error(errEvt.error ?? "stream request failed");
+            captureException(error, {
+              properties: {
+                source: "server_error",
+                requestType: errEvt.requestType,
+                messageId: errEvt.messageId,
+                details: errEvt.details,
+              },
+            });
             if (
               errEvt.messageId &&
               (errEvt.requestType === "stream_start" ||
@@ -449,6 +476,9 @@ const typePlugin = {
             console.error(
               `[type:${accountId}] Failed to send trigger_received ack for ${event.messageId}`,
             );
+            captureException(new Error("Failed to send trigger_received ack"), {
+              properties: { source: "trigger_ack", messageId: event.messageId },
+            });
             return;
           }
 
@@ -465,15 +495,26 @@ const typePlugin = {
         onConnected: () => {
           if (state.connection !== connection) return;
           state.connectionState = "connected";
+          resumeStreamSessionsForAccount(accountId);
           ctx.log?.info(`[type:${accountId}] WebSocket connected`);
         },
-        onDisconnected: () => {
+        onDisconnected: (event) => {
           if (state.connection !== connection) return;
+
+          if (event.willReconnect) {
+            state.connectionState = "connecting";
+            ctx.log?.info(
+              `[type:${accountId}] WebSocket disconnected, reconnecting`,
+            );
+            pauseStreamSessionsForAccount(accountId);
+            return;
+          }
+
           state.connectionState = "disconnected";
           ctx.log?.info(`[type:${accountId}] WebSocket disconnected`);
           failStreamSessionsForAccount(
             accountId,
-            new Error("WebSocket disconnected"),
+            new Error(event.reason || "WebSocket disconnected"),
           );
         },
       });
@@ -492,6 +533,7 @@ const typePlugin = {
             new Error("Account shutdown"),
           );
           connection.disconnect();
+          teardownTelemetry(agentId);
           state.connection = null;
           state.outbound = null;
           state.context = null;

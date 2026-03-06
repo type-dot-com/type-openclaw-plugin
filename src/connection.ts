@@ -1,46 +1,65 @@
 /**
  * WebSocket Connection Manager
  *
- * Manages the WebSocket connection to the Type server. Handles:
+ * Manages the WebSocket connection to the Type server using partysocket
+ * for automatic reconnection with exponential backoff and message buffering.
+ *
+ * Handles:
  * - Authentication via Authorization header
- * - Automatic reconnection with exponential backoff + jitter
- * - Ping/pong keepalive
- * - Message sending and receiving
+ * - Automatic reconnection with exponential backoff
+ * - App-level ping/pong keepalive
+ * - Message buffering during brief disconnections
  */
 
-import WebSocket from "ws";
+import type { CloseEvent } from "partysocket/ws";
+import ReconnectingWebSocket from "partysocket/ws";
+import WS from "ws";
 import {
   type TypeInboundEvent,
   type TypeOutboundMessage,
   typeInboundEventSchema,
 } from "./protocol.js";
+import { captureException } from "./telemetry.js";
 
-const BASE_RECONNECT_DELAY_MS = 1000;
-const MAX_RECONNECT_DELAY_MS = 60000;
-const PING_INTERVAL_MS = 30000; // App-level keepalive every 30s
-const CONTROL_PING_INTERVAL_MS = 20000; // WebSocket control-frame ping every 20s
-const LIVENESS_STALE_MS = 45000;
-const HEALTH_CHECK_INTERVAL_MS = 5000;
+const PING_INTERVAL_MS = 30_000;
+const MAX_ENQUEUED_MESSAGES = 4_096;
+
+// Close codes that should NOT trigger reconnection
+const PERMANENT_CLOSE_CODES = new Set([
+  4000, // Replaced by another connection — don't reconnect (avoids storm)
+]);
 
 export interface ConnectionConfig {
   token: string;
   wsUrl: string;
   onMessage: (event: TypeInboundEvent) => void;
   onConnected?: () => void;
-  onDisconnected?: () => void;
+  onDisconnected?: (event: {
+    code: number;
+    reason: string;
+    willReconnect: boolean;
+  }) => void;
+}
+
+/**
+ * Creates a WebSocket class that injects the Authorization header.
+ * partysocket calls `new WebSocket(url, protocols)` internally,
+ * so we extend `ws` to add the auth header in the constructor.
+ */
+function createAuthWsClass(token: string) {
+  return class AuthWebSocket extends WS {
+    constructor(url: string | URL, protocols?: string | string[]) {
+      super(url, protocols, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    }
+  };
 }
 
 export class TypeConnection {
-  private ws: WebSocket | null = null;
-  private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
-  private appPingInterval: ReturnType<typeof setInterval> | null = null;
-  private controlPingInterval: ReturnType<typeof setInterval> | null = null;
-  private healthCheckInterval: ReturnType<typeof setInterval> | null = null;
-  private reconnectAttempts = 0;
-  private stopped = false;
-  private connectedAtMs: number | null = null;
-  private lastInboundAtMs: number | null = null;
-  private lastControlPongAtMs: number | null = null;
+  private ws: ReconnectingWebSocket | null = null;
+  private pingInterval: ReturnType<typeof setInterval> | null = null;
+  private manuallyClosed = false;
   private readonly config: ConnectionConfig;
 
   constructor(config: ConnectionConfig) {
@@ -48,84 +67,97 @@ export class TypeConnection {
   }
 
   connect(): void {
-    this.stopped = false;
-    this.doConnect();
+    if (this.ws) {
+      return;
+    }
+
+    this.manuallyClosed = false;
+    const ws = new ReconnectingWebSocket(this.config.wsUrl, [], {
+      WebSocket: createAuthWsClass(
+        this.config.token,
+      ) as unknown as typeof globalThis.WebSocket,
+      minReconnectionDelay: 1_000,
+      maxReconnectionDelay: 60_000,
+      reconnectionDelayGrowFactor: 2,
+      connectionTimeout: 30_000,
+      maxRetries: Number.POSITIVE_INFINITY,
+      maxEnqueuedMessages: MAX_ENQUEUED_MESSAGES,
+    });
+
+    ws.addEventListener("open", () => {
+      this.startPingInterval();
+      console.log("[Type WS] Connected");
+      this.config.onConnected?.();
+    });
+
+    ws.addEventListener("message", (event: MessageEvent) => {
+      const data =
+        typeof event.data === "string" ? event.data : String(event.data);
+      this.handleMessage(data);
+    });
+
+    ws.addEventListener("error", (event: Event) => {
+      const errorEvent = event as ErrorEvent;
+      const message = errorEvent.message ?? "unknown";
+      console.error("[Type WS] Connection error:", message);
+      captureException(new Error(`WebSocket connection error: ${message}`), {
+        properties: { source: "websocket_error" },
+      });
+    });
+
+    ws.addEventListener("close", (event: CloseEvent) => {
+      const willReconnect =
+        !this.manuallyClosed &&
+        !PERMANENT_CLOSE_CODES.has(event.code) &&
+        ws.shouldReconnect;
+
+      console.warn("[Type WS] Connection closed", {
+        code: event.code,
+        reason: event.reason,
+        willReconnect,
+      });
+
+      this.stopPingInterval();
+      this.config.onDisconnected?.({
+        code: event.code,
+        reason: event.reason,
+        willReconnect,
+      });
+
+      if (!willReconnect) {
+        console.warn(
+          `[Type WS] Stopping reconnection after close code ${event.code}`,
+        );
+        ws.close();
+        if (this.ws === ws) {
+          this.ws = null;
+        }
+      }
+    });
+
+    this.ws = ws;
   }
 
   disconnect(): void {
-    this.stopped = true;
-    this.stopKeepaliveIntervals();
+    this.manuallyClosed = true;
+    this.stopPingInterval();
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
-    if (this.reconnectTimeout) {
-      clearTimeout(this.reconnectTimeout);
-      this.reconnectTimeout = null;
-    }
-  }
-
-  private startKeepaliveIntervals(ws: WebSocket): void {
-    this.stopKeepaliveIntervals();
-
-    this.appPingInterval = setInterval(() => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      const sent = this.send({ type: "ping" });
-      if (!sent) {
-        console.warn("[Type WS] Failed to send app-level ping");
-      }
-    }, PING_INTERVAL_MS);
-
-    this.controlPingInterval = setInterval(() => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      try {
-        ws.ping();
-      } catch (error) {
-        console.warn("[Type WS] Failed to send control-frame ping", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }, CONTROL_PING_INTERVAL_MS);
-
-    this.healthCheckInterval = setInterval(() => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-
-      const nowMs = Date.now();
-      const mostRecentActivityMs = Math.max(
-        this.lastInboundAtMs ?? 0,
-        this.lastControlPongAtMs ?? 0,
-      );
-      const idleForMs = nowMs - mostRecentActivityMs;
-      if (idleForMs <= LIVENESS_STALE_MS) return;
-
-      console.warn("[Type WS] Connection appears stale; terminating socket", {
-        idleForMs,
-        livenessThresholdMs: LIVENESS_STALE_MS,
-      });
-      ws.terminate();
-    }, HEALTH_CHECK_INTERVAL_MS);
-  }
-
-  private stopKeepaliveIntervals(): void {
-    if (this.appPingInterval) {
-      clearInterval(this.appPingInterval);
-      this.appPingInterval = null;
-    }
-    if (this.controlPingInterval) {
-      clearInterval(this.controlPingInterval);
-      this.controlPingInterval = null;
-    }
-    if (this.healthCheckInterval) {
-      clearInterval(this.healthCheckInterval);
-      this.healthCheckInterval = null;
-    }
   }
 
   send(message: TypeOutboundMessage): boolean {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.ws || this.manuallyClosed) {
       return false;
     }
     try {
+      if (
+        this.ws.readyState === ReconnectingWebSocket.CLOSED &&
+        !this.ws.shouldReconnect
+      ) {
+        return false;
+      }
       this.ws.send(JSON.stringify(message));
       return true;
     } catch {
@@ -134,71 +166,23 @@ export class TypeConnection {
   }
 
   get isConnected(): boolean {
-    return this.ws?.readyState === WebSocket.OPEN;
+    return this.ws?.readyState === ReconnectingWebSocket.OPEN;
   }
 
   // --- Internal ---
 
-  private doConnect(): void {
-    if (this.stopped) return;
+  private startPingInterval(): void {
+    this.stopPingInterval();
+    this.pingInterval = setInterval(() => {
+      this.send({ type: "ping" });
+    }, PING_INTERVAL_MS);
+  }
 
-    const ws = new WebSocket(this.config.wsUrl, {
-      headers: {
-        Authorization: `Bearer ${this.config.token}`,
-      },
-    });
-    this.ws = ws;
-
-    ws.on("open", () => {
-      const nowMs = Date.now();
-      this.connectedAtMs = nowMs;
-      this.lastInboundAtMs = nowMs;
-      this.lastControlPongAtMs = nowMs;
-      this.reconnectAttempts = 0;
-      this.startKeepaliveIntervals(ws);
-      console.log("[Type WS] Connected");
-      this.config.onConnected?.();
-    });
-
-    ws.on("message", (data: WebSocket.Data) => {
-      this.lastInboundAtMs = Date.now();
-      this.handleMessage(data.toString());
-    });
-
-    ws.on("pong", () => {
-      this.lastControlPongAtMs = Date.now();
-    });
-
-    ws.on("error", (err: Error) => {
-      console.error("[Type WS] Connection error:", err.message);
-    });
-
-    ws.on("close", (code: number, reason: Buffer) => {
-      const nowMs = Date.now();
-      const connectedAtMs = this.connectedAtMs;
-      const lastInboundAtMs = this.lastInboundAtMs;
-      const lastControlPongAtMs = this.lastControlPongAtMs;
-      console.warn("[Type WS] Connection closed", {
-        code,
-        reason: reason.toString("utf8"),
-        connectionAgeMs: connectedAtMs === null ? null : nowMs - connectedAtMs,
-        lastInboundAgeMs:
-          lastInboundAtMs === null ? null : nowMs - lastInboundAtMs,
-        lastControlPongAgeMs:
-          lastControlPongAtMs === null ? null : nowMs - lastControlPongAtMs,
-      });
-
-      this.ws = null;
-      this.connectedAtMs = null;
-      this.lastInboundAtMs = null;
-      this.lastControlPongAtMs = null;
-      this.stopKeepaliveIntervals();
-      this.config.onDisconnected?.();
-      // Code 4000 = replaced by another connection — don't reconnect (avoids storm)
-      if (!this.stopped && code !== 4000) {
-        this.scheduleReconnect();
-      }
-    });
+  private stopPingInterval(): void {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
+    }
   }
 
   private handleMessage(raw: string): void {
@@ -206,13 +190,29 @@ export class TypeConnection {
     try {
       json = JSON.parse(raw);
     } catch {
-      console.error("[Type WS] Failed to parse message:", raw);
+      console.error(`[Type WS] Failed to parse message (${raw.length} bytes)`);
+      captureException(new Error("Failed to parse WebSocket message"), {
+        properties: { source: "message_parse", rawLength: raw.length },
+      });
       return;
     }
 
     const parsed = typeInboundEventSchema.safeParse(json);
     if (!parsed.success) {
-      console.error("[Type WS] Unknown message shape:", raw);
+      const msgType =
+        typeof json === "object" && json !== null
+          ? (json as Record<string, unknown>).type
+          : undefined;
+      console.error(
+        `[Type WS] Unknown message shape (${raw.length} bytes, type=${String(msgType)})`,
+      );
+      captureException(new Error("Unknown WebSocket message shape"), {
+        properties: {
+          source: "message_parse",
+          rawLength: raw.length,
+          type: msgType,
+        },
+      });
       return;
     }
 
@@ -230,22 +230,5 @@ export class TypeConnection {
 
     // Forward all other events to the callback
     this.config.onMessage(msg);
-  }
-
-  private scheduleReconnect(): void {
-    const baseDelay = Math.min(
-      BASE_RECONNECT_DELAY_MS * 2 ** this.reconnectAttempts,
-      MAX_RECONNECT_DELAY_MS,
-    );
-    // Add jitter to prevent thundering herd
-    const delay = Math.round(baseDelay * (0.5 + Math.random() * 0.5));
-    this.reconnectAttempts++;
-    console.log(
-      `[Type WS] Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${this.reconnectAttempts})...`,
-    );
-    this.reconnectTimeout = setTimeout(() => {
-      this.reconnectTimeout = null;
-      this.doConnect();
-    }, delay);
   }
 }

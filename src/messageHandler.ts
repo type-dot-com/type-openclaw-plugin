@@ -12,6 +12,7 @@ import { cleanupScope, runInScope } from "./askUserState.js";
 import type { TypeMessageEvent } from "./protocol.js";
 import { ReplyTextProcessor } from "./replyTextProcessor.js";
 import { type StreamOutbound, StreamSession } from "./streamSession.js";
+import { captureException } from "./telemetry.js";
 
 /**
  * Minimal typing for the OpenClaw plugin SDK runtime.
@@ -573,6 +574,30 @@ export function failStreamSession(
 }
 
 /**
+ * Pause stream sessions for a specific account while the transport reconnects.
+ */
+export function pauseStreamSessionsForAccount(accountId: string): void {
+  const prefix = `${accountId}${KEY_SEP}`;
+  for (const [key, session] of sessionsByKey.entries()) {
+    if (key.startsWith(prefix)) {
+      session.handleTransportDisconnected();
+    }
+  }
+}
+
+/**
+ * Resume stream sessions for a specific account after the transport reconnects.
+ */
+export function resumeStreamSessionsForAccount(accountId: string): void {
+  const prefix = `${accountId}${KEY_SEP}`;
+  for (const [key, session] of sessionsByKey.entries()) {
+    if (key.startsWith(prefix)) {
+      session.handleTransportReconnected();
+    }
+  }
+}
+
+/**
  * Fail all active stream sessions. Called as a last resort when the entire
  * plugin is shutting down.
  */
@@ -812,6 +837,10 @@ export function handleInboundMessage(params: {
                   console.error(
                     `[type] Reply error: ${err} ${JSON.stringify(info)}`,
                   );
+                  captureException(
+                    err instanceof Error ? err : new Error(String(err)),
+                    { properties: { source: "reply_error", ...info } },
+                  );
                 },
               },
               replyOptions: {
@@ -839,6 +868,15 @@ export function handleInboundMessage(params: {
               cleanupScope(msg.messageId);
               console.error(
                 `[type] Stream dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+              captureException(
+                err instanceof Error ? err : new Error(String(err)),
+                {
+                  properties: {
+                    source: "stream_dispatch",
+                    messageId: msg.messageId,
+                  },
+                },
               );
               processor.flush();
               if (session.isStarted) {

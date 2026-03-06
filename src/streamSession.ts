@@ -6,9 +6,11 @@
  */
 
 import type { z } from "zod";
+import { captureException } from "./telemetry.js";
 import type { ToolEventPayload, ToolEventPayloadSchema } from "./toolEvents.js";
 
 const ACK_TIMEOUT_MS = 5000;
+const MIN_ACK_TIMEOUT_MS = 2000;
 const HEARTBEAT_INTERVAL_MS = 10_000;
 
 export interface StreamOutbound {
@@ -43,6 +45,8 @@ export class StreamSession {
   #pendingAck: { resolve: () => void; reject: (err: Error) => void } | null =
     null;
   #ackTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  #ackTimeoutRemainingMs: number | null = null;
+  #ackTimeoutStartedAtMs: number | null = null;
   #heartbeatIntervalId: ReturnType<typeof setInterval> | null = null;
 
   constructor(outbound: StreamOutbound, messageId: string) {
@@ -99,13 +103,7 @@ export class StreamSession {
       },
     };
 
-    this.#ackTimeoutId = setTimeout(() => {
-      this.#ackTimeoutId = null;
-      if (this.#pendingAck) {
-        this.#pendingAck.reject(new Error("stream_start ack timeout"));
-        this.#pendingAck = null;
-      }
-    }, ACK_TIMEOUT_MS);
+    this.#startAckTimeout();
   }
 
   /**
@@ -125,6 +123,42 @@ export class StreamSession {
     if (this.#pendingAck) {
       this.#pendingAck.reject(error);
       this.#pendingAck = null;
+    }
+  }
+
+  /**
+   * Pause transport-specific timers while the websocket is reconnecting.
+   */
+  handleTransportDisconnected(): void {
+    if (this.#failed || this.#finishSent) return;
+    if (this.#pendingAck) {
+      this.#pauseAckTimeout();
+    }
+    this.#stopHeartbeat();
+  }
+
+  /**
+   * Resume timers after reconnect and re-send stream_start if we're still
+   * waiting for the initial ack.
+   */
+  handleTransportReconnected(): void {
+    if (this.#failed || this.#finishSent) return;
+
+    if (this.#pendingAck) {
+      const resent = this.#outbound.startStream(this.#messageId);
+      if (!resent) {
+        this.#markSendFailed({
+          kind: "stream_start",
+          message: "startStream resend failed after reconnect",
+        });
+        return;
+      }
+      this.#startAckTimeout(this.#ackTimeoutRemainingMs ?? ACK_TIMEOUT_MS);
+      return;
+    }
+
+    if (this.#ready) {
+      this.#startHeartbeat();
     }
   }
 
@@ -258,6 +292,39 @@ export class StreamSession {
       clearTimeout(this.#ackTimeoutId);
       this.#ackTimeoutId = null;
     }
+    this.#ackTimeoutRemainingMs = null;
+    this.#ackTimeoutStartedAtMs = null;
+  }
+
+  #pauseAckTimeout(): void {
+    if (!this.#ackTimeoutId) return;
+
+    const startedAt = this.#ackTimeoutStartedAtMs ?? Date.now();
+    const remainingMs = Math.max(
+      MIN_ACK_TIMEOUT_MS,
+      (this.#ackTimeoutRemainingMs ?? ACK_TIMEOUT_MS) -
+        (Date.now() - startedAt),
+    );
+
+    clearTimeout(this.#ackTimeoutId);
+    this.#ackTimeoutId = null;
+    this.#ackTimeoutRemainingMs = remainingMs;
+    this.#ackTimeoutStartedAtMs = null;
+  }
+
+  #startAckTimeout(durationMs = ACK_TIMEOUT_MS): void {
+    this.#clearAckTimeout();
+    this.#ackTimeoutRemainingMs = durationMs;
+    this.#ackTimeoutStartedAtMs = Date.now();
+    this.#ackTimeoutId = setTimeout(() => {
+      this.#ackTimeoutId = null;
+      this.#ackTimeoutRemainingMs = null;
+      this.#ackTimeoutStartedAtMs = null;
+      if (this.#pendingAck) {
+        this.#pendingAck.reject(new Error("stream_start ack timeout"));
+        this.#pendingAck = null;
+      }
+    }, durationMs);
   }
 
   #startHeartbeat(): void {
@@ -335,5 +402,8 @@ export class StreamSession {
       eventKind: params.eventKind ?? null,
     };
     console.error(`[type] ${params.message}`, context);
+    captureException(new Error(params.message), {
+      properties: { source: "stream_session", ...context },
+    });
   }
 }

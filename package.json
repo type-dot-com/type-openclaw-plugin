@@ -1,6 +1,6 @@
 {
   "name": "@type-dot-com/type-openclaw-plugin",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "OpenClaw channel plugin for Type — the agent-native team chat platform",
   "type": "module",
   "main": "src/index.ts",
@@ -26,6 +26,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "partysocket": "^1.1.16",
     "ws": "^8.17.1",
     "zod": "^3.23.0"
   },
