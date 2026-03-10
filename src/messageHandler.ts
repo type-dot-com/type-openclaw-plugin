@@ -287,99 +287,6 @@ function buildInboundHistory(msg: TypeMessageEvent): Array<{
   return inboundHistory;
 }
 
-function buildUntrustedContextBlocks(msg: TypeMessageEvent): string[] {
-  const context = msg.context;
-  if (!context) {
-    return [];
-  }
-  const blocks: string[] = [];
-
-  if (context.triggeringUser) {
-    blocks.push(
-      [
-        "Triggering user metadata (untrusted):",
-        "```json",
-        JSON.stringify(
-          {
-            id: context.triggeringUser.id,
-            name: context.triggeringUser.name,
-          },
-          null,
-          2,
-        ),
-        "```",
-      ].join("\n"),
-    );
-  }
-
-  if (context.channel) {
-    blocks.push(
-      [
-        "Channel metadata (untrusted):",
-        "```json",
-        JSON.stringify(
-          {
-            id: context.channel.id,
-            name: context.channel.name,
-            description: context.channel.description,
-            visibility: context.channel.visibility,
-            members: (context.channel.members ?? []).map((member) => ({
-              id: member.id,
-              name: member.name,
-              role: member.role,
-              avatarUrl: member.avatarUrl,
-            })),
-          },
-          null,
-          2,
-        ),
-        "```",
-      ].join("\n"),
-    );
-  }
-
-  if (context.thread) {
-    blocks.push(
-      [
-        "Thread metadata (untrusted):",
-        "```json",
-        JSON.stringify(
-          {
-            parentMessageId: context.thread.parentMessageId,
-            threadTitle: context.thread.threadTitle,
-          },
-          null,
-          2,
-        ),
-        "```",
-      ].join("\n"),
-    );
-  }
-
-  const files = msg.files;
-  if (files && files.length > 0) {
-    blocks.push(
-      [
-        "Attached files (untrusted):",
-        "```json",
-        JSON.stringify(
-          files.map((f) => ({
-            id: f.id,
-            filename: f.filename,
-            mimeType: f.mimeType,
-            sizeBytes: f.sizeBytes,
-          })),
-          null,
-          2,
-        ),
-        "```",
-      ].join("\n"),
-    );
-  }
-
-  return blocks;
-}
-
 function buildBodyForAgent(params: {
   messageBody: string;
   inboundHistory: Array<{ sender: string; body: string; timestamp?: number }>;
@@ -734,7 +641,6 @@ export function handleInboundMessage(params: {
       const senderName = msg.sender?.name ?? "Unknown";
       const messageBody = msg.content ?? "";
       const inboundHistory = buildInboundHistory(msg);
-      const untrustedContext = buildUntrustedContextBlocks(msg);
       const threadContext = msg.context?.thread;
       const channelContext = msg.context?.channel;
       const bodyForAgent = buildBodyForAgent({
@@ -786,8 +692,6 @@ export function handleInboundMessage(params: {
         SenderId: senderId,
         ThreadLabel: threadContext?.threadTitle ?? null,
         InboundHistory: inboundHistory.length > 0 ? inboundHistory : undefined,
-        UntrustedContext:
-          untrustedContext.length > 0 ? untrustedContext : undefined,
         Files: normalizedFiles,
         ...mediaContextFields,
         Provider: "type",
