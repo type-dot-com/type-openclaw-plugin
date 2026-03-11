@@ -39,7 +39,8 @@ Then configure the channel. The plugin supports multiple accounts, where each ac
           "token": "ta_your_agent_token",
           "wsUrl": "wss://your-type-server/api/agents/ws",
           "agentId": "agent_...",
-          "capabilities": ["media"]
+          "capabilities": ["media"],
+          "ownerAllowFrom": ["user_123"]
         },
         "code-agent": {
           "enabled": true,
@@ -73,6 +74,7 @@ Each account key (e.g. `"default"`, `"code-agent"`) names a separate WebSocket c
 | `agentId` | Yes | Agent ID from Type (shown in agent builder) |
 | `capabilities` | No | Array of capabilities (e.g. `["media"]`) |
 | `mediaLocalRoots` | No | Allowed local directories for `sendMedia` local file paths |
+| `ownerAllowFrom` | No | Type user IDs that should be treated as owner senders for owner-only OpenClaw tools |
 
 > **Note:** Set `agents.defaults.verboseDefault` to `"on"` in your OpenClaw config to enable streaming via `onPartialReply` callbacks.
 >

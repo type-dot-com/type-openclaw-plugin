@@ -19,6 +19,7 @@ describe("type plugin config resolution", () => {
             wsUrl: "wss://example.com/api/agents/ws",
             agentId: "agent_123",
             mediaLocalRoots: ["/workspace", "/tmp/uploads"],
+            ownerAllowFrom: ["user_123"],
           },
         },
       };
@@ -29,12 +30,14 @@ describe("type plugin config resolution", () => {
       expect(account.wsUrl).toBe("wss://example.com/api/agents/ws");
       expect(account.agentId).toBe("agent_123");
       expect(account.mediaLocalRoots).toEqual(["/workspace", "/tmp/uploads"]);
+      expect(account.ownerAllowFrom).toEqual(["user_123"]);
     });
 
     test("defaults mediaLocalRoots to empty array", () => {
       const account = resolveAccount({});
       expect(account.wsUrl).toBe(DEFAULT_TYPE_WS_URL);
       expect(account.mediaLocalRoots).toEqual([]);
+      expect(account.ownerAllowFrom).toEqual([]);
     });
 
     test("listAccountIds returns [default] when token is set", () => {
@@ -70,6 +73,7 @@ describe("type plugin config resolution", () => {
               wsUrl: "wss://api.type.com/api/agents/ws",
               agentId: "agent_support",
               mediaLocalRoots: ["/workspace/support"],
+              ownerAllowFrom: ["user_support"],
             },
             engineering: {
               enabled: true,
@@ -93,12 +97,14 @@ describe("type plugin config resolution", () => {
       expect(support.token).toBe("ta_support");
       expect(support.agentId).toBe("agent_support");
       expect(support.mediaLocalRoots).toEqual(["/workspace/support"]);
+      expect(support.ownerAllowFrom).toEqual(["user_support"]);
 
       const eng = resolveAccount(multiAccountCfg, "engineering");
       expect(eng.accountId).toBe("engineering");
       expect(eng.token).toBe("ta_eng");
       expect(eng.agentId).toBe("agent_eng");
       expect(eng.mediaLocalRoots).toEqual([]);
+      expect(eng.ownerAllowFrom).toEqual([]);
     });
 
     test("resolveAccount returns empty config for unknown accountId", () => {

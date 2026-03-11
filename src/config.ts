@@ -23,6 +23,7 @@ const typeAccountConfigSchema = z.object({
   wsUrl: z.string().optional().default(DEFAULT_TYPE_WS_URL),
   agentId: z.string().optional().default(""),
   mediaLocalRoots: z.array(z.string()).optional().default([]),
+  ownerAllowFrom: z.array(z.string()).optional().default([]),
 });
 
 /**
@@ -42,6 +43,7 @@ const cfgSchema = z.object({
           wsUrl: z.string().optional(),
           agentId: z.string().optional(),
           mediaLocalRoots: z.array(z.string()).optional(),
+          ownerAllowFrom: z.array(z.string()).optional(),
           // Multi-account: named accounts object
           accounts: z.record(z.string(), typeAccountConfigSchema).optional(),
         })
@@ -56,6 +58,7 @@ export interface TypeAccountConfig {
   wsUrl: string;
   agentId: string;
   mediaLocalRoots: readonly string[];
+  ownerAllowFrom: readonly string[];
   enabled: boolean;
 }
 
@@ -66,6 +69,7 @@ interface ParsedTypeConfig {
     wsUrl?: string;
     agentId?: string;
     mediaLocalRoots?: string[];
+    ownerAllowFrom?: string[];
   } | null;
   accounts: Record<string, z.infer<typeof typeAccountConfigSchema>> | null;
 }
@@ -91,6 +95,7 @@ function parseTypeConfig(cfg: Record<string, unknown>): ParsedTypeConfig {
         wsUrl: typeBlock.wsUrl,
         agentId: typeBlock.agentId,
         mediaLocalRoots: typeBlock.mediaLocalRoots,
+        ownerAllowFrom: typeBlock.ownerAllowFrom,
       }
     : null;
 
@@ -133,6 +138,7 @@ export function resolveAccount(
         wsUrl: account.wsUrl,
         agentId: account.agentId,
         mediaLocalRoots: account.mediaLocalRoots,
+        ownerAllowFrom: account.ownerAllowFrom,
         enabled: account.enabled,
       };
     }
@@ -143,6 +149,7 @@ export function resolveAccount(
       wsUrl: DEFAULT_TYPE_WS_URL,
       agentId: "",
       mediaLocalRoots: [],
+      ownerAllowFrom: [],
       enabled: false,
     };
   }
@@ -154,6 +161,7 @@ export function resolveAccount(
     wsUrl: legacy?.wsUrl ?? DEFAULT_TYPE_WS_URL,
     agentId: legacy?.agentId ?? "",
     mediaLocalRoots: legacy?.mediaLocalRoots ?? [],
+    ownerAllowFrom: legacy?.ownerAllowFrom ?? [],
     enabled: legacy?.enabled ?? false,
   };
 }

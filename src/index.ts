@@ -500,7 +500,12 @@ const typePlugin = {
           handleInboundMessage({
             msg: event,
             accountId,
-            account: { token, wsUrl, agentId },
+            account: {
+              token,
+              wsUrl,
+              agentId,
+              ownerAllowFrom: accountConfig.ownerAllowFrom,
+            },
             cfg: ctx.cfg,
             runtime,
             outbound: state.outbound,

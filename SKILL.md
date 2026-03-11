@@ -22,7 +22,8 @@ Connect OpenClaw agents to Type team chat via a duplex WebSocket.
           "wsUrl": "wss://your-type-server/api/agents/ws",
           "agentId": "agent_...",
           "capabilities": ["media"],
-          "mediaLocalRoots": ["/home/daytona/.openclaw/workspace"]
+          "mediaLocalRoots": ["/home/daytona/.openclaw/workspace"],
+          "ownerAllowFrom": ["user_123"]
         }
       }
     }
@@ -62,6 +63,7 @@ Each account is fully isolated — sessions, ack tracking, and disconnect handli
 | `agentId` | Yes | Agent ID from Type (shown in agent builder) |
 | `capabilities` | No | Array of capabilities (e.g. `["media"]`) |
 | `mediaLocalRoots` | Recommended | Allowed local directories for `sendMedia` local file paths |
+| `ownerAllowFrom` | No | Type user IDs that should be treated as owner senders for owner-only tools |
 
 > Legacy single-account config (flat fields at the `type` level) is still supported but deprecated.
 

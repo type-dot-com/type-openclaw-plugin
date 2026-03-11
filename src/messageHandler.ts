@@ -49,12 +49,18 @@ interface TypeInboundAccountContext {
   token: string;
   wsUrl: string;
   agentId: string;
+  ownerAllowFrom?: readonly string[];
 }
 
 type InboundFile = NonNullable<TypeMessageEvent["files"]>[number];
 type InboundFileWithDownloadUrl = InboundFile & {
   downloadUrl?: string;
   url?: string;
+};
+type InboundHistoryEntry = {
+  sender: string;
+  body: string;
+  timestamp?: number;
 };
 
 /**
@@ -256,64 +262,111 @@ function resolveHistorySenderLabel(message: {
   );
 }
 
-function buildInboundHistory(msg: TypeMessageEvent): Array<{
-  sender: string;
-  body: string;
-  timestamp?: number;
-}> {
-  const context = msg.context;
-  if (!context) {
-    return [];
+function toInboundHistoryEntry(message: {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: number | null;
+  sender: { name: string } | null;
+}): InboundHistoryEntry {
+  const entry: InboundHistoryEntry = {
+    sender: resolveHistorySenderLabel({
+      role: message.role,
+      sender: message.sender ? { name: message.sender.name } : null,
+    }),
+    body: message.content,
+  };
+  if (typeof message.timestamp === "number") {
+    entry.timestamp = message.timestamp;
   }
-
-  const sourceMessages =
-    context.thread?.messages ?? context.recentMessages ?? [];
-  const inboundHistory = sourceMessages
-    .filter((message) => message.content.trim().length > 0)
-    .map((message) => {
-      const entry: { sender: string; body: string; timestamp?: number } = {
-        sender: resolveHistorySenderLabel({
-          role: message.role,
-          sender: message.sender ? { name: message.sender.name } : null,
-        }),
-        body: message.content,
-      };
-      if (typeof message.timestamp === "number") {
-        entry.timestamp = message.timestamp;
-      }
-      return entry;
-    });
-
-  return inboundHistory;
+  return entry;
 }
 
+function buildInboundHistory(msg: TypeMessageEvent): InboundHistoryEntry[] {
+  const sourceMessages = msg.context?.recentMessages ?? [];
+  return sourceMessages
+    .filter((message) => message.content.trim().length > 0)
+    .map((message) => toInboundHistoryEntry(message));
+}
 function buildBodyForAgent(params: {
   messageBody: string;
-  inboundHistory: Array<{ sender: string; body: string; timestamp?: number }>;
-  threadContext: ThreadTriggerContext | null | undefined;
   files: InboundFileWithDownloadUrl[] | undefined;
 }): string {
-  const { messageBody, inboundHistory, threadContext, files } = params;
-
-  if (
-    inboundHistory.length === 0 &&
-    !threadContext?.threadTitle &&
-    (!files || files.length === 0)
-  ) {
+  const { messageBody, files } = params;
+  if (messageBody.trim().length > 0) {
     return messageBody;
   }
+  if (files && files.length > 0) {
+    return "See attached files.";
+  }
+  return messageBody;
+}
 
-  const sections: string[] = [];
+function buildThreadBodies(
+  threadContext: ThreadTriggerContext | null | undefined,
+): {
+  threadStarterBody?: string;
+  threadHistoryBody?: string;
+} {
+  const threadMessages =
+    threadContext?.messages.filter(
+      (message) => message.content.trim().length > 0,
+    ) ?? [];
+  const [starter, ...history] = threadMessages;
 
-  if (threadContext?.threadTitle) {
-    sections.push(`Thread title: ${threadContext.threadTitle}`);
+  const threadStarterBody = starter?.content.trim()
+    ? starter.content
+    : undefined;
+  const threadHistoryBody =
+    history.length > 0
+      ? history
+          .map((message) => {
+            const entry = toInboundHistoryEntry(message);
+            return `${entry.sender}: ${entry.body}`;
+          })
+          .join("\n\n")
+      : undefined;
+
+  return {
+    threadStarterBody,
+    threadHistoryBody,
+  };
+}
+
+function buildUntrustedContext(params: {
+  channelContext:
+    | NonNullable<NonNullable<TypeMessageEvent["context"]>["channel"]>
+    | null
+    | undefined;
+  threadContext: ThreadTriggerContext | null | undefined;
+  files: InboundFileWithDownloadUrl[] | undefined;
+}): string[] | undefined {
+  const entries: string[] = [];
+  const { channelContext, threadContext, files } = params;
+
+  if (channelContext) {
+    const lines = ["Channel metadata (untrusted):"];
+    lines.push(`- Name: ${channelContext.name}`);
+    if (channelContext.description) {
+      lines.push(`- Description: ${channelContext.description}`);
+    }
+    lines.push(`- Visibility: ${channelContext.visibility}`);
+    if (channelContext.members.length > 0) {
+      const memberLabels = channelContext.members.map(
+        (member) => `${member.name} (${member.role})`,
+      );
+      lines.push(`- Scoped members: ${memberLabels.join(", ")}`);
+    }
+    entries.push(lines.join("\n"));
   }
 
-  if (inboundHistory.length > 0) {
-    const historyLines = inboundHistory.map(
-      (entry) => `- ${entry.sender}: ${entry.body}`,
-    );
-    sections.push(["Conversation history:", ...historyLines].join("\n"));
+  if (threadContext) {
+    const lines = ["Thread metadata (untrusted):"];
+    lines.push(`- Parent message ID: ${threadContext.parentMessageId}`);
+    if (threadContext.threadTitle) {
+      lines.push(`- Title: ${threadContext.threadTitle}`);
+    }
+    lines.push(`- Prior message count: ${threadContext.messages.length}`);
+    entries.push(lines.join("\n"));
   }
 
   if (files && files.length > 0) {
@@ -321,11 +374,16 @@ function buildBodyForAgent(params: {
       const resolvedUrl = resolveDownloadUrl(file);
       return `- ${file.filename} (id: ${file.id}, type: ${file.mimeType}, sizeBytes: ${file.sizeBytes}${resolvedUrl ? `, url: ${resolvedUrl}` : ""})`;
     });
-    sections.push(["Attached files:", ...fileLines].join("\n"));
+    entries.push(["Attached files (untrusted):", ...fileLines].join("\n"));
   }
 
-  sections.push(`Current message: ${messageBody}`);
-  return sections.join("\n\n");
+  return entries.length > 0 ? entries : undefined;
+}
+
+function resolveOpenClawChatType(
+  chatType: TypeMessageEvent["chatType"],
+): "direct" | "channel" {
+  return chatType === "dm" ? "direct" : "channel";
 }
 
 async function resolveFileDownloadUrls(params: {
@@ -643,10 +701,15 @@ export function handleInboundMessage(params: {
       const inboundHistory = buildInboundHistory(msg);
       const threadContext = msg.context?.thread;
       const channelContext = msg.context?.channel;
+      const { threadStarterBody, threadHistoryBody } =
+        buildThreadBodies(threadContext);
+      const untrustedContext = buildUntrustedContext({
+        channelContext,
+        threadContext,
+        files: effectiveFiles,
+      });
       const bodyForAgent = buildBodyForAgent({
         messageBody,
-        inboundHistory,
-        threadContext,
         files: effectiveFiles,
       });
 
@@ -684,7 +747,7 @@ export function handleInboundMessage(params: {
           }
         })(),
         AccountId: accountId,
-        ChatType: msg.chatType,
+        ChatType: resolveOpenClawChatType(msg.chatType),
         ConversationLabel: msg.channelName ?? msg.channelId,
         GroupChannel: channelContext?.name ?? msg.channelName ?? msg.channelId,
         GroupSubject: channelContext?.description ?? null,
@@ -692,6 +755,18 @@ export function handleInboundMessage(params: {
         SenderId: senderId,
         ThreadLabel: threadContext?.threadTitle ?? null,
         InboundHistory: inboundHistory.length > 0 ? inboundHistory : undefined,
+        ThreadStarterBody: threadStarterBody,
+        ThreadHistoryBody: threadHistoryBody,
+        MessageThreadId:
+          msg.chatType === "thread"
+            ? (msg.parentMessageId ?? msg.messageId)
+            : undefined,
+        ReplyToId: msg.parentMessageId ?? undefined,
+        UntrustedContext: untrustedContext,
+        OwnerAllowFrom:
+          account?.ownerAllowFrom && account.ownerAllowFrom.length > 0
+            ? [...account.ownerAllowFrom]
+            : undefined,
         Files: normalizedFiles,
         ...mediaContextFields,
         Provider: "type",

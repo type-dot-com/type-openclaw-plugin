@@ -533,7 +533,7 @@ describe("messageHandler stream ack routing", () => {
     ]);
   });
 
-  test("embeds thread history in BodyForAgent while preserving RawBody", async () => {
+  test("preserves raw thread message and exposes structured context", async () => {
     let capturedContext: Record<string, unknown> | null = null;
 
     const outbound: StreamOutbound = {
@@ -635,58 +635,24 @@ describe("messageHandler stream ack routing", () => {
       return;
     }
 
-    const bodyValue = capturedContext.Body;
-    expect(typeof bodyValue).toBe("string");
-    if (typeof bodyValue !== "string") {
-      return;
-    }
-    expect(bodyValue).toContain("Thread title: Incident follow-up");
-    expect(bodyValue).toContain("Conversation history:");
-    expect(bodyValue).toContain("- Alice: What happened?");
-    expect(bodyValue).toContain("- Assistant: A deployment failed.");
-    expect(bodyValue).toContain(
-      "Current message: Please summarize this thread.",
-    );
-
+    expect(capturedContext.Body).toBe("Please summarize this thread.");
     expect(capturedContext.RawBody).toBe("Please summarize this thread.");
     expect(capturedContext.CommandBody).toBe("Please summarize this thread.");
-    expect(capturedContext.ChatType).toBe("thread");
+    expect(capturedContext.ChatType).toBe("channel");
     expect(capturedContext.To).toBe("ch_1");
-    expect(capturedContext.BodyForAgent).toBe(bodyValue);
+    expect(capturedContext.BodyForAgent).toBe("Please summarize this thread.");
     expect(capturedContext.BodyForCommands).toBe(
       "Please summarize this thread.",
     );
+    expect(capturedContext.ThreadStarterBody).toBe("What happened?");
+    expect(capturedContext.ThreadHistoryBody).toBe(
+      "Assistant: A deployment failed.",
+    );
+    expect(capturedContext.MessageThreadId).toBe("msg_parent");
+    expect(capturedContext.ReplyToId).toBe("msg_parent");
 
     const inboundHistoryValue = capturedContext.InboundHistory;
-    expect(Array.isArray(inboundHistoryValue)).toBe(true);
-    if (!Array.isArray(inboundHistoryValue)) {
-      return;
-    }
-    expect(inboundHistoryValue).toHaveLength(2);
-    const firstEntry = inboundHistoryValue[0];
-    const secondEntry = inboundHistoryValue[1];
-    expect(firstEntry).toBeTruthy();
-    expect(secondEntry).toBeTruthy();
-    expect(typeof firstEntry).toBe("object");
-    expect(typeof secondEntry).toBe("object");
-    if (
-      !firstEntry ||
-      typeof firstEntry !== "object" ||
-      !secondEntry ||
-      typeof secondEntry !== "object"
-    ) {
-      return;
-    }
-    expect(firstEntry).toMatchObject({
-      sender: "Alice",
-      body: "What happened?",
-      timestamp: 1700000000000,
-    });
-    expect(secondEntry).toMatchObject({
-      sender: "Assistant",
-      body: "A deployment failed.",
-      timestamp: 1700000001000,
-    });
+    expect(inboundHistoryValue).toBeUndefined();
 
     const untrustedContextValue = capturedContext.UntrustedContext;
     expect(Array.isArray(untrustedContextValue)).toBe(true);
@@ -700,11 +666,14 @@ describe("messageHandler stream ack routing", () => {
     expect(untrustedContextValue.join("\n")).toContain(
       "Thread metadata (untrusted):",
     );
+    expect(untrustedContextValue.join("\n")).toContain(
+      "Title: Incident follow-up",
+    );
 
     expect(capturedContext.TypeTriggerContext).toEqual(message.context);
   });
 
-  test("includes attached files in BodyForAgent", async () => {
+  test("keeps attached file metadata out of BodyForAgent", async () => {
     let capturedContext: Record<string, unknown> | null = null;
 
     const outbound: StreamOutbound = {
@@ -715,6 +684,9 @@ describe("messageHandler stream ack routing", () => {
         return true;
       },
       streamEvent(): boolean {
+        return true;
+      },
+      streamHeartbeat(): boolean {
         return true;
       },
       finishStream(): boolean {
@@ -761,19 +733,20 @@ describe("messageHandler stream ack routing", () => {
       return;
     }
 
-    const bodyValue = capturedContext.Body;
-    expect(typeof bodyValue).toBe("string");
-    if (typeof bodyValue !== "string") {
+    expect(capturedContext.Body).toBe("can you see this image");
+    expect(capturedContext.BodyForAgent).toBe("can you see this image");
+    expect(capturedContext.RawBody).toBe("can you see this image");
+    const untrustedContextValue = capturedContext.UntrustedContext;
+    expect(Array.isArray(untrustedContextValue)).toBe(true);
+    if (!Array.isArray(untrustedContextValue)) {
       return;
     }
-
-    expect(bodyValue).toContain("Attached files:");
-    expect(bodyValue).toContain(
+    expect(untrustedContextValue.join("\n")).toContain(
+      "Attached files (untrusted):",
+    );
+    expect(untrustedContextValue.join("\n")).toContain(
       "- screenshot.png (id: file_123, type: image/png, sizeBytes: 1024)",
     );
-    expect(bodyValue).toContain("Current message: can you see this image");
-    expect(capturedContext.BodyForAgent).toBe(bodyValue);
-    expect(capturedContext.RawBody).toBe("can you see this image");
   });
 
   test("resolves inbound file IDs into MediaUrls when account config is present", async () => {
@@ -802,6 +775,9 @@ describe("messageHandler stream ack routing", () => {
         return true;
       },
       streamEvent(): boolean {
+        return true;
+      },
+      streamHeartbeat(): boolean {
         return true;
       },
       finishStream(): boolean {
@@ -880,15 +856,76 @@ describe("messageHandler stream ack routing", () => {
         },
       ]);
       const bodyForAgent = capturedContext.BodyForAgent;
-      expect(typeof bodyForAgent).toBe("string");
-      if (typeof bodyForAgent !== "string") {
+      expect(bodyForAgent).toBe("can you inspect this image");
+      const untrustedContextValue = capturedContext.UntrustedContext;
+      expect(Array.isArray(untrustedContextValue)).toBe(true);
+      if (!Array.isArray(untrustedContextValue)) {
         return;
       }
-      expect(bodyForAgent).toContain(
+      expect(untrustedContextValue.join("\n")).toContain(
         "url: https://files.example.com/signed-image.png",
       );
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  test("passes owner allowlist through to OpenClaw context", async () => {
+    let capturedContext: Record<string, unknown> | null = null;
+
+    const outbound: StreamOutbound = {
+      startStream(): boolean {
+        return true;
+      },
+      streamToken(): boolean {
+        return true;
+      },
+      streamEvent(): boolean {
+        return true;
+      },
+      streamHeartbeat(): boolean {
+        return true;
+      },
+      finishStream(): boolean {
+        return true;
+      },
+    };
+
+    const runtime: PluginRuntime = {
+      channel: {
+        reply: {
+          finalizeInboundContext(
+            ctx: Record<string, unknown>,
+          ): Record<string, unknown> {
+            capturedContext = ctx;
+            return ctx;
+          },
+          dispatchReplyWithBufferedBlockDispatcher(): Promise<void> {
+            return Promise.resolve();
+          },
+        },
+      },
+    };
+
+    handleInboundMessage({
+      msg: createMessage("msg_owner"),
+      accountId: "acct_1",
+      account: {
+        token: "ta_test_token",
+        wsUrl: "wss://type.example.com/api/agents/ws",
+        agentId: "agent_123",
+        ownerAllowFrom: ["user_1"],
+      },
+      cfg: {},
+      runtime,
+      outbound,
+    });
+
+    expect(capturedContext).not.toBeNull();
+    if (!capturedContext) {
+      return;
+    }
+
+    expect(capturedContext.OwnerAllowFrom).toEqual(["user_1"]);
   });
 });
