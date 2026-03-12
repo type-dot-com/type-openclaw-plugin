@@ -19,7 +19,7 @@ import {
   type TypeOutboundMessage,
   typeInboundEventSchema,
 } from "./protocol.js";
-import { captureException } from "./telemetry.js";
+import { captureEvent, captureException } from "./telemetry.js";
 
 const PING_INTERVAL_MS = 30_000;
 const MAX_ENQUEUED_MESSAGES = 4_096;
@@ -87,6 +87,7 @@ export class TypeConnection {
     ws.addEventListener("open", () => {
       this.startPingInterval();
       console.log("[Type WS] Connected");
+      captureEvent("ws_connected", { wsUrl: this.config.wsUrl });
       this.config.onConnected?.();
     });
 
@@ -100,6 +101,7 @@ export class TypeConnection {
       const errorEvent = event as ErrorEvent;
       const message = errorEvent.message ?? "unknown";
       console.error("[Type WS] Connection error:", message);
+      captureEvent("ws_error", { error: message });
       captureException(new Error(`WebSocket connection error: ${message}`), {
         properties: { source: "websocket_error" },
       });
@@ -112,6 +114,11 @@ export class TypeConnection {
         ws.shouldReconnect;
 
       console.warn("[Type WS] Connection closed", {
+        code: event.code,
+        reason: event.reason,
+        willReconnect,
+      });
+      captureEvent("ws_disconnected", {
         code: event.code,
         reason: event.reason,
         willReconnect,

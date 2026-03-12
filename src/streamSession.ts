@@ -6,7 +6,7 @@
  */
 
 import type { z } from "zod";
-import { captureException } from "./telemetry.js";
+import { captureEvent, captureException } from "./telemetry.js";
 import type { ToolEventPayload, ToolEventPayloadSchema } from "./toolEvents.js";
 
 const ACK_TIMEOUT_MS = 5000;
@@ -131,6 +131,11 @@ export class StreamSession {
    */
   handleTransportDisconnected(): void {
     if (this.#failed || this.#finishSent) return;
+    captureEvent("stream_transport_disconnected", {
+      messageId: this.#messageId,
+      awaitingAck: this.#pendingAck !== null,
+      ready: this.#ready,
+    });
     if (this.#pendingAck) {
       this.#pauseAckTimeout();
     }
@@ -143,6 +148,11 @@ export class StreamSession {
    */
   handleTransportReconnected(): void {
     if (this.#failed || this.#finishSent) return;
+    captureEvent("stream_transport_reconnected", {
+      messageId: this.#messageId,
+      awaitingAck: this.#pendingAck !== null,
+      ready: this.#ready,
+    });
 
     if (this.#pendingAck) {
       const resent = this.#outbound.startStream(this.#messageId);
@@ -321,6 +331,10 @@ export class StreamSession {
       this.#ackTimeoutRemainingMs = null;
       this.#ackTimeoutStartedAtMs = null;
       if (this.#pendingAck) {
+        captureEvent("stream_ack_timeout", {
+          messageId: this.#messageId,
+          timeoutMs: durationMs,
+        });
         this.#pendingAck.reject(new Error("stream_start ack timeout"));
         this.#pendingAck = null;
       }
@@ -402,6 +416,7 @@ export class StreamSession {
       eventKind: params.eventKind ?? null,
     };
     console.error(`[type] ${params.message}`, context);
+    captureEvent("stream_session_failed", context);
     captureException(new Error(params.message), {
       properties: { source: "stream_session", ...context },
     });

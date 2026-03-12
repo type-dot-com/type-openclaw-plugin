@@ -44,6 +44,7 @@ import {
   normalizeTypeTarget,
 } from "./targetNormalization.js";
 import {
+  captureEvent,
   captureException,
   initializeTelemetry,
   teardownTelemetry,
@@ -517,6 +518,7 @@ const typePlugin = {
           state.connectionState = "connected";
           resumeStreamSessionsForAccount(accountId);
           ctx.log?.info(`[type:${accountId}] WebSocket connected`);
+          captureEvent("account_connected", { accountId, agentId });
         },
         onDisconnected: (event) => {
           if (state.connection !== connection) return;
@@ -526,12 +528,26 @@ const typePlugin = {
             ctx.log?.info(
               `[type:${accountId}] WebSocket disconnected, reconnecting`,
             );
+            captureEvent("account_disconnected", {
+              accountId,
+              agentId,
+              code: event.code,
+              reason: event.reason,
+              willReconnect: true,
+            });
             pauseStreamSessionsForAccount(accountId);
             return;
           }
 
           state.connectionState = "disconnected";
           ctx.log?.info(`[type:${accountId}] WebSocket disconnected`);
+          captureEvent("account_disconnected", {
+            accountId,
+            agentId,
+            code: event.code,
+            reason: event.reason,
+            willReconnect: false,
+          });
           failStreamSessionsForAccount(
             accountId,
             new Error(event.reason || "WebSocket disconnected"),
@@ -547,6 +563,7 @@ const typePlugin = {
 
       await new Promise<void>((resolve) => {
         ctx.abortSignal.addEventListener("abort", () => {
+          captureEvent("account_shutdown", { accountId, agentId });
           state.connectionState = "disconnected";
           failStreamSessionsForAccount(
             accountId,

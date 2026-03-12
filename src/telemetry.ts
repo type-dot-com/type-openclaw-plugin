@@ -1,16 +1,16 @@
 /**
  * Telemetry Client
  *
- * Reports errors and exceptions to the Type server's telemetry endpoint
- * (`POST /api/agents/:agentId/telemetry`). The server forwards these to
- * PostHog and structured logging.
+ * Reports errors, exceptions, and events to the Type server's telemetry
+ * endpoint (`POST /api/agents/:agentId/telemetry`). The server forwards
+ * these to PostHog and structured logging.
  *
  * Supports multiple accounts: each account registers its own config,
  * and logs are flushed to all active accounts' endpoints.
  *
  * Requires `initializeTelemetry()` to be called with account context
- * before `captureException()` will do anything. All operations are
- * fire-and-forget and never throw.
+ * before `captureException()` or `captureEvent()` will do anything.
+ * All operations are fire-and-forget and never throw.
  */
 
 import { resolveApiOriginFromWsUrl } from "./apiOrigin.js";
@@ -26,7 +26,7 @@ interface TelemetryConfig {
 }
 
 interface TelemetryLogEntry {
-  level: "error" | "warn";
+  level: "error" | "warn" | "info";
   message: string;
   timestamp: string;
   context?: Record<string, unknown>;
@@ -104,6 +104,27 @@ export function captureException(
   });
 
   // Flush immediately if batch is full
+  if (pendingLogs.length >= MAX_BATCH_SIZE) {
+    void flushTelemetry();
+  }
+}
+
+export function captureEvent(
+  message: string,
+  properties?: Record<string, unknown>,
+): void {
+  if (accounts.size === 0) return;
+
+  pendingLogs.push({
+    level: "info",
+    message,
+    timestamp: new Date().toISOString(),
+    context: {
+      source: "openclaw-type",
+      ...properties,
+    },
+  });
+
   if (pendingLogs.length >= MAX_BATCH_SIZE) {
     void flushTelemetry();
   }

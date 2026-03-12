@@ -12,7 +12,7 @@ import { cleanupScope, runInScope } from "./askUserState.js";
 import type { TypeMessageEvent } from "./protocol.js";
 import { ReplyTextProcessor } from "./replyTextProcessor.js";
 import { type StreamOutbound, StreamSession } from "./streamSession.js";
-import { captureException } from "./telemetry.js";
+import { captureEvent, captureException } from "./telemetry.js";
 
 /**
  * Minimal typing for the OpenClaw plugin SDK runtime.
@@ -682,6 +682,15 @@ export function handleInboundMessage(params: {
     `[type] Inbound message from ${msg.sender?.name ?? "unknown"} in ${msg.channelName ?? msg.channelId}`,
   );
 
+  captureEvent("message_received", {
+    messageId: msg.messageId,
+    channelId: msg.channelId,
+    chatType: msg.chatType,
+    mentionsAgent: msg.mentionsAgent,
+    hasFiles: (msg.files?.length ?? 0) > 0,
+    accountId,
+  });
+
   const inboundFiles = msg.files ? [...msg.files] : undefined;
 
   const dispatchWithResolvedFiles = (
@@ -842,6 +851,13 @@ export function handleInboundMessage(params: {
                 );
               }
               markSessionDispatchComplete(key);
+              captureEvent("message_processed", {
+                messageId: msg.messageId,
+                channelId: msg.channelId,
+                chatType: msg.chatType,
+                accountId,
+                success: true,
+              });
             })
             .catch((err: unknown) => {
               cleanupScope(msg.messageId);
@@ -862,6 +878,14 @@ export function handleInboundMessage(params: {
                 session.finish();
               }
               markSessionDispatchComplete(key);
+              captureEvent("message_processed", {
+                messageId: msg.messageId,
+                channelId: msg.channelId,
+                chatType: msg.chatType,
+                accountId,
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+              });
             });
         } catch (syncErr) {
           cleanupScope(msg.messageId);
@@ -877,6 +901,14 @@ export function handleInboundMessage(params: {
       log?.error(
         `[type] Message dispatch error: ${err instanceof Error ? err.message : String(err)}`,
       );
+      captureEvent("message_processed", {
+        messageId: msg.messageId,
+        channelId: msg.channelId,
+        chatType: msg.chatType,
+        accountId,
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   };
 
