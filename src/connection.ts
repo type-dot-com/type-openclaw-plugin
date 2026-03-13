@@ -60,6 +60,7 @@ export class TypeConnection {
   private ws: ReconnectingWebSocket | null = null;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
   private manuallyClosed = false;
+  private reconnectPending = false;
   private readonly config: ConnectionConfig;
 
   constructor(config: ConnectionConfig) {
@@ -85,6 +86,7 @@ export class TypeConnection {
     });
 
     ws.addEventListener("open", () => {
+      this.clearReconnectPending();
       this.startPingInterval();
       console.log("[Type WS] Connected");
       captureEvent("ws_connected", { wsUrl: this.config.wsUrl });
@@ -132,6 +134,7 @@ export class TypeConnection {
       });
 
       if (!willReconnect) {
+        this.clearReconnectPending();
         console.warn(
           `[Type WS] Stopping reconnection after close code ${event.code}`,
         );
@@ -147,11 +150,31 @@ export class TypeConnection {
 
   disconnect(): void {
     this.manuallyClosed = true;
+    this.clearReconnectPending();
     this.stopPingInterval();
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
+  }
+
+  requestReconnectOnce(reason = "reconnect requested"): boolean {
+    if (this.reconnectPending) {
+      return false;
+    }
+    this.reconnectPending = true;
+    this.reconnect(reason);
+    return true;
+  }
+
+  reconnect(reason = "reconnect requested"): void {
+    this.manuallyClosed = false;
+    this.stopPingInterval();
+    if (!this.ws) {
+      this.connect();
+      return;
+    }
+    this.ws.reconnect(1012, reason.slice(0, 123));
   }
 
   send(message: TypeOutboundMessage): boolean {
@@ -165,6 +188,21 @@ export class TypeConnection {
       ) {
         return false;
       }
+      this.ws.send(JSON.stringify(message));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  sendNow(message: TypeOutboundMessage): boolean {
+    if (!this.ws || this.manuallyClosed) {
+      return false;
+    }
+    if (this.ws.readyState !== ReconnectingWebSocket.OPEN) {
+      return false;
+    }
+    try {
       this.ws.send(JSON.stringify(message));
       return true;
     } catch {
@@ -190,6 +228,10 @@ export class TypeConnection {
       clearInterval(this.pingInterval);
       this.pingInterval = null;
     }
+  }
+
+  private clearReconnectPending(): void {
+    this.reconnectPending = false;
   }
 
   private handleMessage(raw: string): void {

@@ -27,6 +27,12 @@ import {
   resolveAccount,
 } from "./config.js";
 import { TypeConnection } from "./connection.js";
+import {
+  clearInboundTriggerTrackingForAccount,
+  confirmInboundTriggerDelivery,
+  getInboundTriggerSnapshot,
+  noteInboundTriggerAckAttempt,
+} from "./inboundTriggerTracker.js";
 import { uploadMediaForType } from "./mediaUpload.js";
 import {
   failStreamSession,
@@ -51,6 +57,7 @@ import {
 } from "./telemetry.js";
 
 const STREAM_ALREADY_ACTIVE_ERROR = "Stream already active for this message";
+const TRIGGER_CONFIRMATION_TIMEOUT_MS = 10_000;
 
 function isPathWithinRoot(candidatePath: string, rootPath: string): boolean {
   const relative = path.relative(rootPath, candidatePath);
@@ -407,12 +414,20 @@ const typePlugin = {
 
           if (event.type === "success") {
             const reqType = (event as { requestType?: string }).requestType;
+            const messageId =
+              "messageId" in event && typeof event.messageId === "string"
+                ? event.messageId
+                : undefined;
             console.log(`[type:${accountId}] Server success: ${reqType}`);
+            if (
+              messageId &&
+              (reqType === "trigger_received" ||
+                reqType === "respond" ||
+                reqType === "stream_start")
+            ) {
+              confirmInboundTriggerDelivery(accountId, messageId);
+            }
             if (reqType === "stream_start") {
-              const messageId =
-                "messageId" in event && typeof event.messageId === "string"
-                  ? event.messageId
-                  : undefined;
               resolveStreamAck(messageId, accountId);
             }
             return;
@@ -424,6 +439,13 @@ const typePlugin = {
               details?: unknown;
               messageId?: string;
             };
+            if (
+              errEvt.messageId &&
+              (errEvt.requestType === "respond" ||
+                errEvt.requestType === "stream_start")
+            ) {
+              confirmInboundTriggerDelivery(accountId, errEvt.messageId);
+            }
             if (
               errEvt.requestType === "stream_start" &&
               errEvt.error === STREAM_ALREADY_ACTIVE_ERROR
@@ -483,7 +505,16 @@ const typePlugin = {
           if (event.type !== "message") return;
           if (!state.outbound) return;
 
-          const acknowledged = connection.send({
+          const trackedTrigger = getInboundTriggerSnapshot(
+            accountId,
+            event.messageId,
+          );
+          if (trackedTrigger?.serverAcknowledged) {
+            return;
+          }
+
+          // sendNow must precede noteInboundTriggerAckAttempt so failed sends cannot mark the tracker dispatched before confirmInboundTriggerDelivery can resolve it.
+          const acknowledged = connection.sendNow({
             type: "trigger_received",
             messageId: event.messageId,
             receivedAt: Date.now(),
@@ -495,6 +526,35 @@ const typePlugin = {
             captureException(new Error("Failed to send trigger_received ack"), {
               properties: { source: "trigger_ack", messageId: event.messageId },
             });
+            connection.requestReconnectOnce("trigger_received send failed");
+            return;
+          }
+
+          const tracking = noteInboundTriggerAckAttempt({
+            accountId,
+            messageId: event.messageId,
+            ackTimeoutMs: TRIGGER_CONFIRMATION_TIMEOUT_MS,
+            onAckTimeout: () => {
+              if (state.connection !== connection) return;
+              if (state.connectionState === "disconnected") return;
+              if (
+                !connection.requestReconnectOnce(
+                  "trigger_received confirmation timeout",
+                )
+              ) {
+                return;
+              }
+              console.warn(
+                `[type:${accountId}] trigger_received confirmation timed out for ${event.messageId}; reconnecting`,
+              );
+              captureEvent("trigger_received_confirmation_timeout", {
+                accountId,
+                agentId,
+                messageId: event.messageId,
+              });
+            },
+          });
+          if (!tracking.shouldDispatch) {
             return;
           }
 
@@ -574,6 +634,7 @@ const typePlugin = {
           state.connection = null;
           state.outbound = null;
           state.context = null;
+          clearInboundTriggerTrackingForAccount(accountId);
           clearAccountState(accountId);
           resolve();
         });
