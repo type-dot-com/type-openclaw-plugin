@@ -41,6 +41,25 @@ export interface ConnectionConfig {
   }) => void;
 }
 
+function getTokenPrefix(token: string): string {
+  return token.slice(0, 11);
+}
+
+function getReadyStateLabel(readyState: number): string {
+  switch (readyState) {
+    case ReconnectingWebSocket.CONNECTING:
+      return "connecting";
+    case ReconnectingWebSocket.OPEN:
+      return "open";
+    case ReconnectingWebSocket.CLOSING:
+      return "closing";
+    case ReconnectingWebSocket.CLOSED:
+      return "closed";
+    default:
+      return `unknown:${readyState}`;
+  }
+}
+
 /**
  * Creates a WebSocket class that injects the Authorization header.
  * partysocket calls `new WebSocket(url, protocols)` internally,
@@ -69,10 +88,20 @@ export class TypeConnection {
 
   connect(): void {
     if (this.ws) {
+      console.debug("[Type WS] connect() ignored; socket already exists", {
+        wsUrl: this.config.wsUrl,
+        tokenPrefix: getTokenPrefix(this.config.token),
+        readyState: getReadyStateLabel(this.ws.readyState),
+        shouldReconnect: this.ws.shouldReconnect,
+      });
       return;
     }
 
     this.manuallyClosed = false;
+    console.info("[Type WS] Opening connection", {
+      wsUrl: this.config.wsUrl,
+      tokenPrefix: getTokenPrefix(this.config.token),
+    });
     const ws = new ReconnectingWebSocket(this.config.wsUrl, [], {
       WebSocket: createAuthWsClass(
         this.config.token,
@@ -102,8 +131,14 @@ export class TypeConnection {
     ws.addEventListener("error", (event: Event) => {
       const errorEvent = event as ErrorEvent;
       const message = errorEvent.message ?? "unknown";
-      console.error("[Type WS] Connection error:", message);
-      captureEvent("ws_error", { error: message });
+      console.error("[Type WS] Connection error", {
+        wsUrl: this.config.wsUrl,
+        tokenPrefix: getTokenPrefix(this.config.token),
+        message,
+        readyState: getReadyStateLabel(ws.readyState),
+        shouldReconnect: ws.shouldReconnect,
+      });
+      captureEvent("ws_error", { error: message, wsUrl: this.config.wsUrl });
       captureException(new Error(`WebSocket connection error: ${message}`), {
         properties: { source: "websocket_error" },
       });
@@ -116,8 +151,12 @@ export class TypeConnection {
         ws.shouldReconnect;
 
       console.warn("[Type WS] Connection closed", {
+        wsUrl: this.config.wsUrl,
+        tokenPrefix: getTokenPrefix(this.config.token),
         code: event.code,
         reason: event.reason,
+        readyState: getReadyStateLabel(ws.readyState),
+        manuallyClosed: this.manuallyClosed,
         willReconnect,
       });
       captureEvent("ws_disconnected", {
@@ -152,6 +191,12 @@ export class TypeConnection {
     this.manuallyClosed = true;
     this.clearReconnectPending();
     this.stopPingInterval();
+    console.info("[Type WS] Disconnect requested", {
+      wsUrl: this.config.wsUrl,
+      tokenPrefix: getTokenPrefix(this.config.token),
+      hasSocket: this.ws !== null,
+      readyState: this.ws ? getReadyStateLabel(this.ws.readyState) : "none",
+    });
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -160,9 +205,19 @@ export class TypeConnection {
 
   requestReconnectOnce(reason = "reconnect requested"): boolean {
     if (this.reconnectPending) {
+      console.debug("[Type WS] Reconnect request suppressed", {
+        wsUrl: this.config.wsUrl,
+        tokenPrefix: getTokenPrefix(this.config.token),
+        reason,
+      });
       return false;
     }
     this.reconnectPending = true;
+    console.info("[Type WS] Reconnect requested", {
+      wsUrl: this.config.wsUrl,
+      tokenPrefix: getTokenPrefix(this.config.token),
+      reason,
+    });
     this.reconnect(reason);
     return true;
   }
@@ -170,6 +225,13 @@ export class TypeConnection {
   reconnect(reason = "reconnect requested"): void {
     this.manuallyClosed = false;
     this.stopPingInterval();
+    console.info("[Type WS] Reconnect starting", {
+      wsUrl: this.config.wsUrl,
+      tokenPrefix: getTokenPrefix(this.config.token),
+      reason,
+      hasSocket: this.ws !== null,
+      readyState: this.ws ? getReadyStateLabel(this.ws.readyState) : "none",
+    });
     if (!this.ws) {
       this.connect();
       return;
