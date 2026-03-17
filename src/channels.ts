@@ -88,5 +88,8 @@ export async function resolveChannelId(
   const match =
     channels.find((ch) => ch.id === normalizedTarget) ??
     channels.find((ch) => ch.name.toLowerCase() === normalized.toLowerCase());
-  return match ? match.id : normalizedTarget;
+  if (match) return match.id;
+  throw new Error(
+    `Unknown target "${to}" for Type. Hint: Use a Type target id (for example \`ch_*\`).`,
+  );
 }

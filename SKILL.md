@@ -22,7 +22,7 @@ Connect OpenClaw agents to Type team chat via a duplex WebSocket.
           "wsUrl": "wss://your-type-server/api/agents/ws",
           "agentId": "agent_...",
           "capabilities": ["media"],
-          "mediaLocalRoots": ["/home/daytona/.openclaw/workspace"],
+          "mediaLocalRoots": ["~/.openclaw/workspace"],
           "ownerAllowFrom": ["user_123"]
         }
       }
@@ -58,10 +58,11 @@ Each account is fully isolated — sessions, ack tracking, and disconnect handli
 
 | Account Field | Required | Description |
 |-------|----------|-------------|
+| `enabled` | No | Whether the account is active (default: `false`) |
 | `token` | Yes | Agent token from Type UI (`ta_`-prefixed) |
 | `wsUrl` | Yes | Type server WebSocket endpoint |
 | `agentId` | Yes | Agent ID from Type (shown in agent builder) |
-| `capabilities` | No | Array of capabilities (e.g. `["media"]`) |
+| `capabilities` | No | Array of capabilities (e.g. `["media"]`) — OpenClaw-level, not parsed by this plugin |
 | `mediaLocalRoots` | Recommended | Allowed local directories for `sendMedia` local file paths |
 | `ownerAllowFrom` | No | Type user IDs that should be treated as owner senders for owner-only tools |
 
@@ -117,6 +118,99 @@ dispatch complete     -> send stream_finish
 
 The plugin sets `disableBlockStreaming: true` in `replyOptions` and uses `onPartialReply` for text streaming. Tool outputs arrive via the `deliver` callback (with `info.kind === "tool"`) and are forwarded as `tool-call` + `tool-result` stream events.
 
+## Agent Tools
+
+The plugin registers tools that the agent can call during conversations:
+
+### `ask_user`
+
+Ask the user a question and wait for their reply. Use when clarification, approval, or input is needed before proceeding.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `question` | Yes | The question to ask the user |
+
+## Inbound Context Reference
+
+When a message trigger arrives from Type, the plugin builds an OpenClaw inbound context payload with the following fields. See `messageHandler.ts` for the full construction.
+
+### Message Body
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Body` | `string` | Message content (falls back to `"See attached files."` when body is empty but files are present) |
+| `BodyForAgent` | `string` | Same as `Body` |
+| `BodyForCommands` | `string` | Raw message text, unmodified |
+| `RawBody` | `string` | Raw message text, unmodified |
+| `CommandBody` | `string` | Raw message text, unmodified |
+| `CommandAuthorized` | `boolean` | Always `true` |
+
+### Sender & Routing
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `From` | `string` | Sender identifier, format: `type:{senderId}` |
+| `To` | `string` | Channel ID (`ch_*` format — use this value as `channelId` when sending messages back to this conversation) |
+| `SenderId` | `string` | Type user ID of the message sender |
+| `SenderName` | `string` | Display name of the sender |
+| `AccountId` | `string` | Type account key from plugin config (e.g. `"default"`) |
+| `Provider` | `string` | Always `"type"` |
+| `Surface` | `string` | Always `"type"` |
+| `MessageSid` | `string` | Type message ID |
+| `Timestamp` | `number` | Message timestamp in milliseconds |
+
+### Session & Chat Type
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `SessionKey` | `string` | Agent-scoped session key. Format varies by chat type: agent DM → `agent:{agentId}:type:{replyTarget.parentMessageId}` (falls back to `{channelId}:{messageId}`), thread → `agent:{agentId}:type:{replyTarget.parentMessageId}` (falls back to `{channelId}:{messageId}`), DM → `agent:{agentId}:type:{channelId}`, channel → `agent:{agentId}:type:{channelId}:{messageId}` |
+| `ChatType` | `"direct" \| "channel"` | `"direct"` for DMs and agent DMs, `"channel"` for channels and threads |
+| `ConversationLabel` | `string` | Channel name, falls back to channel ID |
+| `GroupChannel` | `string` | Channel name or description for group context |
+| `GroupSubject` | `string \| null` | Channel description, or `null` if unavailable |
+
+### Routing Metadata
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `TypeChannelType` | `"default" \| "alert" \| "agent_dm"` | The channel type. `"agent_dm"` indicates an agent DM conversation |
+| `TypeConversationRootMessageId` | `string \| null` | The root message ID for the conversation thread (set for agent DMs and threads) |
+| `TypeReplyTarget` | `{channelId: string, parentMessageId: string \| null}` | The canonical reply target. Always use `TypeReplyTarget.channelId` (a `ch_*` ID) as the `channelId` when sending messages or media — never use channel names like `ConversationLabel` or `GroupChannel` |
+
+### Thread Context
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ThreadLabel` | `string \| null` | Thread title if the message is in a thread |
+| `ThreadStarterBody` | `string \| undefined` | Content of the first message in the thread |
+| `ThreadHistoryBody` | `string \| undefined` | Prior thread messages formatted as `{sender}: {body}`, double-newline separated |
+| `MessageThreadId` | `string \| undefined` | Parent message ID (set only for thread messages) |
+| `ReplyToId` | `string \| undefined` | Parent message ID if replying |
+
+### History
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `InboundHistory` | `InboundHistoryEntry[] \| undefined` | Recent messages in the channel/conversation, each with sender name, body, and timestamp. Built from `context.recentMessages` |
+
+### Media & Files
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Files` | `Array<{id, filename, mimeType, sizeBytes, url}>` | Attached files with presigned download URLs |
+| `MediaUrl` | `string \| undefined` | Download URL of the first attached file |
+| `MediaUrls` | `string[] \| undefined` | Download URLs of all attached files |
+| `MediaType` | `string \| undefined` | MIME type of the first attached file |
+| `MediaTypes` | `string[] \| undefined` | MIME types of all attached files |
+
+### Permissions & Extended Context
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `OwnerAllowFrom` | `string[] \| undefined` | Type user IDs treated as owners (from account config `ownerAllowFrom`) |
+| `UntrustedContext` | `string[] \| undefined` | Human-readable text blocks summarizing channel metadata, thread metadata, and file listings. Marked "untrusted" because the content originates from user-generated data |
+| `TypeTriggerContext` | `object \| null` | Raw Type trigger context containing `triggeringUser`, `channel` (name, description, visibility, members with roles), `thread` (parentMessageId, title, messages), and `recentMessages` |
+
 ## WebSocket Message Reference
 
 ### Server -> Agent
@@ -125,18 +219,60 @@ The plugin sets `disableBlockStreaming: true` in `replyOptions` and uses `onPart
 |------|-------------|
 | `message` | Agent was triggered (mentioned in channel or DM) |
 | `ping` | Keepalive (reply with `pong`) |
-| `success` | Ack for a previous outbound message |
-| `error` | Error for a previous outbound message |
+| `success` | Ack for a previous outbound message (`requestType` + optional `messageId`) |
+| `error` | Error for a previous outbound message (`requestType`, `error`, optional `messageId`, `details`) |
+| `stream_cancel` | User cancelled an active streaming response (`messageId`) |
 
 ### Agent -> Server
 
 | Type | Description |
 |------|-------------|
-| `pong` | Reply to ping |
-| `send` | Proactive message to a channel |
+| `ping` | Client-initiated keepalive (sent every 30s) |
+| `pong` | Reply to server ping |
+| `trigger_received` | Acknowledge receipt of a message trigger |
+| `respond` | Non-streaming full response to a triggered message |
+| `send` | Proactive message to a channel or DM |
 | `stream_start` | Begin streaming response |
 | `stream_event` | Stream token/tool-call/tool-result |
+| `stream_heartbeat` | Keep an active stream alive while no tokens/events are emitted (sent every 10s) |
 | `stream_finish` | End streaming response |
+
+### Outbound Message Fields
+
+#### `trigger_received`
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `messageId` | Yes | The message ID being acknowledged |
+| `receivedAt` | No | Timestamp (ms) when the trigger was received |
+
+#### `respond`
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `messageId` | Yes | The triggered message ID to respond to |
+| `content` | Yes | Full response text |
+| `fileIds` | No | Uploaded file IDs to attach |
+| `needsReply` | No | Signal that the agent expects a reply from the user |
+| `question` | No | Question text for the UI when `needsReply` is true |
+
+#### `send`
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `channelId` | Yes | Target channel ID (`ch_*` format from the inbound `To` or `TypeReplyTarget.channelId` field — do not use channel names) |
+| `content` | Yes | Message text |
+| `parentMessageId` | No | Parent message ID for thread replies |
+| `fileIds` | No | Uploaded file IDs to attach |
+
+#### `stream_finish`
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `messageId` | Yes | The streaming message ID |
+| `fileIds` | No | Uploaded file IDs to attach |
+| `needsReply` | No | Signal that the agent expects a reply from the user |
+| `question` | No | Question text for the UI when `needsReply` is true |
 
 ### Stream Event Kinds
 
@@ -144,7 +280,11 @@ The plugin sets `disableBlockStreaming: true` in `replyOptions` and uses `onPart
 |------|--------|-------------|
 | `token` | `text` | Text delta |
 | `tool-call` | `toolCallId, toolName, input` | Tool invocation started |
-| `tool-result` | `toolCallId, toolName, outcomes` | Tool completed |
+| `tool-result` | `toolCallId, toolName, outcomes` | Tool completed (outcomes: `[{kind, toolName, text}]`) |
+
+## Setup Notes
+
+- **`tools.profile`**: Must be set to `"full"` in `~/.openclaw/openclaw.json`. The `"coding"` profile filters out channel plugin tools (including `ask_user`).
 
 ## Troubleshooting
 

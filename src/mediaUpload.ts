@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { resolveApiOriginFromWsUrl } from "./apiOrigin.js";
@@ -109,12 +110,18 @@ function filenameFromUrl(mediaUrl: string): string {
   }
 }
 
+function expandTilde(p: string): string {
+  if (p === "~") return os.homedir();
+  if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
 function resolveLocalFilePath(mediaUrl: string): string {
   if (mediaUrl.startsWith("file://")) {
     const parsed = new URL(mediaUrl);
     return decodeURIComponent(parsed.pathname);
   }
-  return path.resolve(mediaUrl);
+  return path.resolve(expandTilde(mediaUrl));
 }
 
 function isPathWithinRoot(candidatePath: string, rootPath: string): boolean {
@@ -145,6 +152,49 @@ function assertLocalPathAllowed(
       `Local media path is outside allowed roots: ${normalizedPath}`,
     );
   }
+}
+
+export function resolveEffectiveMediaLocalRoots(params: {
+  configuredRoots: readonly string[];
+  requestedRoots?: readonly string[];
+}): readonly string[] | undefined {
+  const normalizeRoots = (roots: readonly string[]): string[] =>
+    Array.from(new Set(roots.map((root) => path.resolve(expandTilde(root)))));
+
+  const configuredRoots =
+    params.configuredRoots.length > 0
+      ? normalizeRoots(params.configuredRoots)
+      : [];
+  const requestedRoots =
+    params.requestedRoots && params.requestedRoots.length > 0
+      ? normalizeRoots(params.requestedRoots)
+      : [];
+
+  if (configuredRoots.length === 0) {
+    return requestedRoots.length > 0 ? requestedRoots : undefined;
+  }
+  if (requestedRoots.length === 0) {
+    return configuredRoots;
+  }
+
+  const intersection = new Set<string>();
+  for (const configuredRoot of configuredRoots) {
+    for (const requestedRoot of requestedRoots) {
+      if (isPathWithinRoot(configuredRoot, requestedRoot)) {
+        intersection.add(configuredRoot);
+      } else if (isPathWithinRoot(requestedRoot, configuredRoot)) {
+        intersection.add(requestedRoot);
+      }
+    }
+  }
+
+  if (intersection.size === 0) {
+    throw new Error(
+      "Requested mediaLocalRoots do not overlap with configured channels.type.mediaLocalRoots",
+    );
+  }
+
+  return Array.from(intersection);
 }
 
 async function fetchWithTimeout(
@@ -256,6 +306,7 @@ export async function uploadMediaForType(params: {
   account: TypeOutboundAccountContext;
 }): Promise<UploadedMediaResult> {
   const { mediaUrl, mediaLocalRoots, channelId, account } = params;
+
   if (!account.token) {
     throw new Error("Type token is required for media uploads");
   }

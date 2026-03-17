@@ -9,6 +9,7 @@
 import { z } from "zod";
 import { resolveApiOriginFromWsUrl } from "./apiOrigin.js";
 import { cleanupScope, runInScope } from "./askUserState.js";
+import { runWithInboundRoutingContext } from "./inboundRoutingState.js";
 import type { TypeMessageEvent } from "./protocol.js";
 import { ReplyTextProcessor } from "./replyTextProcessor.js";
 import { type StreamOutbound, StreamSession } from "./streamSession.js";
@@ -380,10 +381,45 @@ function buildUntrustedContext(params: {
   return entries.length > 0 ? entries : undefined;
 }
 
-function resolveOpenClawChatType(
-  chatType: TypeMessageEvent["chatType"],
-): "direct" | "channel" {
-  return chatType === "dm" ? "direct" : "channel";
+function isAgentDmMessage(msg: TypeMessageEvent): boolean {
+  return msg.channelType === "agent_dm";
+}
+
+function resolveOpenClawChatType(msg: TypeMessageEvent): "direct" | "channel" {
+  return msg.chatType === "dm" || isAgentDmMessage(msg) ? "direct" : "channel";
+}
+
+function resolveReplyParentMessageId(msg: TypeMessageEvent): string | null {
+  return msg.replyTarget.parentMessageId ?? null;
+}
+
+function requiresExplicitReplyTarget(msg: TypeMessageEvent): boolean {
+  return isAgentDmMessage(msg) || msg.chatType === "thread";
+}
+
+function resolveSessionKeyForMessage(params: {
+  msg: TypeMessageEvent;
+  agentId: string;
+}): string {
+  const { msg, agentId } = params;
+  const replyParentMessageId = resolveReplyParentMessageId(msg);
+
+  if (isAgentDmMessage(msg)) {
+    return replyParentMessageId
+      ? `agent:${agentId}:type:${replyParentMessageId}`
+      : `agent:${agentId}:type:${msg.channelId}:${msg.messageId}`;
+  }
+
+  switch (msg.chatType) {
+    case "thread":
+      return replyParentMessageId
+        ? `agent:${agentId}:type:${replyParentMessageId}`
+        : `agent:${agentId}:type:${msg.channelId}:${msg.messageId}`;
+    case "dm":
+      return `agent:${agentId}:type:${msg.channelId}`;
+    default:
+      return `agent:${agentId}:type:${msg.channelId}:${msg.messageId}`;
+  }
 }
 
 async function resolveFileDownloadUrls(params: {
@@ -691,6 +727,22 @@ export function handleInboundMessage(params: {
     accountId,
   });
 
+  const replyParentMessageId = resolveReplyParentMessageId(msg);
+  if (requiresExplicitReplyTarget(msg) && !replyParentMessageId) {
+    log?.error(
+      `[type] Missing explicit reply target for ${msg.channelType}:${msg.messageId}`,
+    );
+    captureException(new Error("Missing explicit reply target"), {
+      properties: {
+        source: "missing_reply_target",
+        messageId: msg.messageId,
+        channelId: msg.channelId,
+        chatType: msg.chatType,
+        channelType: msg.channelType,
+      },
+    });
+  }
+
   const inboundFiles = msg.files ? [...msg.files] : undefined;
 
   const dispatchWithResolvedFiles = (
@@ -740,23 +792,12 @@ export function handleInboundMessage(params: {
         CommandBody: messageBody,
         CommandAuthorized: true,
         From: `type:${senderId}`,
-        // Use the concrete conversation id so "message send" can infer a valid
-        // reply target for this channel/thread.
+        // Always use the concrete channel target from Type. Reply threading is
+        // carried separately in ReplyToId / MessageThreadId.
         To: msg.channelId,
-        SessionKey: (() => {
-          switch (msg.chatType) {
-            case "thread":
-              return msg.parentMessageId
-                ? `agent:${agentId}:type:${msg.parentMessageId}`
-                : `agent:${agentId}:type:${msg.channelId}:${msg.messageId}`;
-            case "dm":
-              return `agent:${agentId}:type:${msg.channelId}`;
-            default:
-              return `agent:${agentId}:type:${msg.channelId}:${msg.messageId}`;
-          }
-        })(),
+        SessionKey: resolveSessionKeyForMessage({ msg, agentId }),
         AccountId: accountId,
-        ChatType: resolveOpenClawChatType(msg.chatType),
+        ChatType: resolveOpenClawChatType(msg),
         ConversationLabel: msg.channelName ?? msg.channelId,
         GroupChannel: channelContext?.name ?? msg.channelName ?? msg.channelId,
         GroupSubject: channelContext?.description ?? null,
@@ -766,11 +807,8 @@ export function handleInboundMessage(params: {
         InboundHistory: inboundHistory.length > 0 ? inboundHistory : undefined,
         ThreadStarterBody: threadStarterBody,
         ThreadHistoryBody: threadHistoryBody,
-        MessageThreadId:
-          msg.chatType === "thread"
-            ? (msg.parentMessageId ?? msg.messageId)
-            : undefined,
-        ReplyToId: msg.parentMessageId ?? undefined,
+        MessageThreadId: replyParentMessageId,
+        ReplyToId: replyParentMessageId,
         UntrustedContext: untrustedContext,
         OwnerAllowFrom:
           account?.ownerAllowFrom && account.ownerAllowFrom.length > 0
@@ -782,6 +820,9 @@ export function handleInboundMessage(params: {
         Surface: "type",
         MessageSid: msg.messageId,
         Timestamp: msg.timestamp,
+        TypeChannelType: msg.channelType,
+        TypeConversationRootMessageId: msg.conversationRootMessageId,
+        TypeReplyTarget: msg.replyTarget,
         TypeTriggerContext: msg.context ?? null,
       });
 
@@ -794,109 +835,120 @@ export function handleInboundMessage(params: {
         msg.messageId,
       );
 
-      runInScope(msg.messageId, () => {
-        try {
-          void runtime.channel.reply
-            .dispatchReplyWithBufferedBlockDispatcher({
-              ctx: ctxPayload,
-              cfg,
-              dispatcherOptions: {
-                deliver: async (
-                  payload: { text?: string },
-                  info: Record<string, unknown>,
-                ) => {
-                  if (info.kind !== "tool") return;
-                  if (!payload.text) {
-                    processor.markToolEventSeen();
-                    return;
-                  }
-                  const intercepted = await processor.handleToolDelivery(
-                    payload.text,
-                    {
-                      toolCallId: resolveToolCallId(info),
+      runInScope(msg.messageId, () =>
+        runWithInboundRoutingContext(
+          {
+            channelId: msg.replyTarget.channelId,
+            replyTargetParentMessageId: replyParentMessageId,
+            requiresExplicitReplyTarget: requiresExplicitReplyTarget(msg),
+          },
+          () => {
+            try {
+              void runtime.channel.reply
+                .dispatchReplyWithBufferedBlockDispatcher({
+                  ctx: ctxPayload,
+                  cfg,
+                  dispatcherOptions: {
+                    deliver: async (
+                      payload: { text?: string },
+                      info: Record<string, unknown>,
+                    ) => {
+                      if (info.kind !== "tool") return;
+                      if (!payload.text) {
+                        processor.markToolEventSeen();
+                        return;
+                      }
+                      const intercepted = await processor.handleToolDelivery(
+                        payload.text,
+                        {
+                          toolCallId: resolveToolCallId(info),
+                        },
+                      );
+                      if (intercepted) return;
                     },
-                  );
-                  if (intercepted) return;
-                },
-                onSkip: (_payload, info) => {
-                  console.log(`[type] Reply skipped: ${JSON.stringify(info)}`);
-                },
-                onError: (err, info) => {
+                    onSkip: (_payload, info) => {
+                      console.log(
+                        `[type] Reply skipped: ${JSON.stringify(info)}`,
+                      );
+                    },
+                    onError: (err, info) => {
+                      console.error(
+                        `[type] Reply error: ${err} ${JSON.stringify(info)}`,
+                      );
+                      captureException(
+                        err instanceof Error ? err : new Error(String(err)),
+                        { properties: { source: "reply_error", ...info } },
+                      );
+                    },
+                  },
+                  replyOptions: {
+                    disableBlockStreaming: true,
+                    onPartialReply: (payload: { text?: string }) => {
+                      if (!payload.text || session.isFailed) return;
+                      processor.processText(payload.text, false);
+                    },
+                  },
+                })
+                .then(() => {
+                  processor.flush();
+                  cleanupScope(msg.messageId);
+                  const { needsReply, needsReplyQuestion } = processor.result;
+                  if (session.isStarted || needsReply) {
+                    session.finish(
+                      needsReply
+                        ? { needsReply: true, question: needsReplyQuestion }
+                        : undefined,
+                    );
+                  }
+                  markSessionDispatchComplete(key);
+                  captureEvent("message_processed", {
+                    messageId: msg.messageId,
+                    channelId: msg.channelId,
+                    chatType: msg.chatType,
+                    accountId,
+                    success: true,
+                  });
+                })
+                .catch((err: unknown) => {
+                  cleanupScope(msg.messageId);
                   console.error(
-                    `[type] Reply error: ${err} ${JSON.stringify(info)}`,
+                    `[type] Stream dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
                   );
                   captureException(
                     err instanceof Error ? err : new Error(String(err)),
-                    { properties: { source: "reply_error", ...info } },
+                    {
+                      properties: {
+                        source: "stream_dispatch",
+                        messageId: msg.messageId,
+                      },
+                    },
                   );
-                },
-              },
-              replyOptions: {
-                disableBlockStreaming: true,
-                onPartialReply: (payload: { text?: string }) => {
-                  if (!payload.text || session.isFailed) return;
-                  processor.processText(payload.text, false);
-                },
-              },
-            })
-            .then(() => {
-              processor.flush();
-              cleanupScope(msg.messageId);
-              const { needsReply, needsReplyQuestion } = processor.result;
-              if (session.isStarted || needsReply) {
-                session.finish(
-                  needsReply
-                    ? { needsReply: true, question: needsReplyQuestion }
-                    : undefined,
-                );
-              }
-              markSessionDispatchComplete(key);
-              captureEvent("message_processed", {
-                messageId: msg.messageId,
-                channelId: msg.channelId,
-                chatType: msg.chatType,
-                accountId,
-                success: true,
-              });
-            })
-            .catch((err: unknown) => {
-              cleanupScope(msg.messageId);
-              console.error(
-                `[type] Stream dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
-              );
-              captureException(
-                err instanceof Error ? err : new Error(String(err)),
-                {
-                  properties: {
-                    source: "stream_dispatch",
+                  processor.flush();
+                  if (session.isStarted) {
+                    session.finish();
+                  }
+                  markSessionDispatchComplete(key);
+                  captureEvent("message_processed", {
                     messageId: msg.messageId,
-                  },
-                },
-              );
+                    channelId: msg.channelId,
+                    chatType: msg.chatType,
+                    accountId,
+                    success: false,
+                    error: err instanceof Error ? err.message : String(err),
+                  });
+                });
+            } catch (syncErr) {
+              cleanupScope(msg.messageId);
               processor.flush();
               if (session.isStarted) {
                 session.finish();
               }
               markSessionDispatchComplete(key);
-              captureEvent("message_processed", {
-                messageId: msg.messageId,
-                channelId: msg.channelId,
-                chatType: msg.chatType,
-                accountId,
-                success: false,
-                error: err instanceof Error ? err.message : String(err),
-              });
-            });
-        } catch (syncErr) {
-          cleanupScope(msg.messageId);
-          processor.flush();
-          if (session.isStarted) {
-            session.finish();
-          }
-          markSessionDispatchComplete(key);
-          throw syncErr;
-        }
-      });
+              throw syncErr;
+            }
+          },
+        ),
+      );
     } catch (err) {
       log?.error(
         `[type] Message dispatch error: ${err instanceof Error ? err.message : String(err)}`,

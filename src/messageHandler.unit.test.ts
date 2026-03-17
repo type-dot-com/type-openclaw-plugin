@@ -31,7 +31,13 @@ function createMessage(
     messageId,
     channelId: "ch_1",
     channelName: "general",
+    channelType: "default",
     parentMessageId: null,
+    conversationRootMessageId: null,
+    replyTarget: {
+      channelId: "ch_1",
+      parentMessageId: null,
+    },
     chatType: "channel",
     sender: { id: "user_1", name: "User" },
     content: "hello",
@@ -309,6 +315,9 @@ describe("messageHandler stream ack routing", () => {
       streamEvent(): boolean {
         return true;
       },
+      streamHeartbeat(): boolean {
+        return true;
+      },
       finishStream(messageId: string): boolean {
         finished.push(messageId);
         return true;
@@ -364,6 +373,9 @@ describe("messageHandler stream ack routing", () => {
         return true;
       },
       streamEvent(): boolean {
+        return true;
+      },
+      streamHeartbeat(): boolean {
         return true;
       },
       finishStream(messageId: string): boolean {
@@ -422,6 +434,9 @@ describe("messageHandler stream ack routing", () => {
         return true;
       },
       streamEvent(): boolean {
+        return true;
+      },
+      streamHeartbeat(): boolean {
         return true;
       },
       finishStream(messageId: string): boolean {
@@ -485,6 +500,9 @@ describe("messageHandler stream ack routing", () => {
         return true;
       },
       streamEvent(): boolean {
+        return true;
+      },
+      streamHeartbeat(): boolean {
         return true;
       },
       finishStream(messageId: string): boolean {
@@ -574,6 +592,11 @@ describe("messageHandler stream ack routing", () => {
       chatType: "thread",
       content: "Please summarize this thread.",
       parentMessageId: "msg_parent",
+      conversationRootMessageId: "msg_parent",
+      replyTarget: {
+        channelId: "ch_1",
+        parentMessageId: "msg_parent",
+      },
       context: {
         triggeringUser: {
           id: "user_1",
@@ -584,6 +607,7 @@ describe("messageHandler stream ack routing", () => {
           name: "general",
           description: "Team chat",
           visibility: "public",
+          channelType: "default",
           members: [
             {
               id: "user_1",
@@ -650,6 +674,12 @@ describe("messageHandler stream ack routing", () => {
     );
     expect(capturedContext.MessageThreadId).toBe("msg_parent");
     expect(capturedContext.ReplyToId).toBe("msg_parent");
+    expect(capturedContext.TypeChannelType).toBe("default");
+    expect(capturedContext.TypeConversationRootMessageId).toBe("msg_parent");
+    expect(capturedContext.TypeReplyTarget).toEqual({
+      channelId: "ch_1",
+      parentMessageId: "msg_parent",
+    });
 
     const inboundHistoryValue = capturedContext.InboundHistory;
     expect(inboundHistoryValue).toBeUndefined();
@@ -671,6 +701,73 @@ describe("messageHandler stream ack routing", () => {
     );
 
     expect(capturedContext.TypeTriggerContext).toEqual(message.context);
+  });
+
+  test("does not infer a thread reply target from legacy parent fields", async () => {
+    let capturedContext: Record<string, unknown> | null = null;
+
+    const outbound: StreamOutbound = {
+      startStream(): boolean {
+        return true;
+      },
+      streamToken(): boolean {
+        return true;
+      },
+      streamEvent(): boolean {
+        return true;
+      },
+      streamHeartbeat(): boolean {
+        return true;
+      },
+      finishStream(): boolean {
+        return true;
+      },
+    };
+
+    const runtime: PluginRuntime = {
+      channel: {
+        reply: {
+          finalizeInboundContext(
+            ctx: Record<string, unknown>,
+          ): Record<string, unknown> {
+            capturedContext = ctx;
+            return ctx;
+          },
+          dispatchReplyWithBufferedBlockDispatcher(): Promise<void> {
+            return Promise.resolve();
+          },
+        },
+      },
+    };
+
+    handleInboundMessage({
+      msg: createMessage("msg_ctx_missing_target", {
+        chatType: "thread",
+        parentMessageId: "msg_parent",
+        conversationRootMessageId: "msg_parent",
+        replyTarget: {
+          channelId: "ch_1",
+          parentMessageId: null,
+        },
+      }),
+      accountId: "acct_1",
+      cfg: {},
+      runtime,
+      outbound,
+    });
+
+    expect(capturedContext).not.toBeNull();
+    if (!capturedContext) {
+      return;
+    }
+
+    expect(capturedContext.MessageThreadId).toBeNull();
+    expect(capturedContext.ReplyToId).toBeNull();
+    expect(capturedContext.TypeConversationRootMessageId).toBe("msg_parent");
+    expect(capturedContext.TypeReplyTarget).toEqual({
+      channelId: "ch_1",
+      parentMessageId: null,
+    });
   });
 
   test("keeps attached file metadata out of BodyForAgent", async () => {
@@ -751,20 +848,25 @@ describe("messageHandler stream ack routing", () => {
 
   test("resolves inbound file IDs into MediaUrls when account config is present", async () => {
     let capturedContext: Record<string, unknown> | null = null;
-    const fetchCalls: string[] = [];
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
-      fetchCalls.push(String(input));
-      return new Response(
-        JSON.stringify({
-          downloadUrl: "https://files.example.com/signed-image.png",
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        },
-      );
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      _init?: RequestInit,
+    ): Promise<Response> => {
+      const url = String(input);
+      if (url.includes("/files/download-url")) {
+        return new Response(
+          JSON.stringify({
+            downloadUrl: "https://files.example.com/signed-image.png",
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+      return new Response(null, { status: 404 });
     }) as typeof fetch;
 
     const outbound: StreamOutbound = {
@@ -825,24 +927,19 @@ describe("messageHandler stream ack routing", () => {
         outbound,
       });
 
-      for (let i = 0; i < 8 && !capturedContext; i += 1) {
-        await Promise.resolve();
+      for (let i = 0; i < 50 && !capturedContext; i += 1) {
+        await new Promise((r) => setTimeout(r, 10));
       }
 
-      expect(fetchCalls).toEqual([
-        "https://type.example.com/api/agents/agent_123/files/download-url",
-      ]);
+      const expectedUrl = "https://files.example.com/signed-image.png";
+
       expect(capturedContext).not.toBeNull();
       if (!capturedContext) {
         return;
       }
 
-      expect(capturedContext.MediaUrl).toBe(
-        "https://files.example.com/signed-image.png",
-      );
-      expect(capturedContext.MediaUrls).toEqual([
-        "https://files.example.com/signed-image.png",
-      ]);
+      expect(capturedContext.MediaUrl).toBe(expectedUrl);
+      expect(capturedContext.MediaUrls).toEqual([expectedUrl]);
       expect(capturedContext.MediaType).toBe("image/png");
       expect(capturedContext.MediaTypes).toEqual(["image/png"]);
       expect(capturedContext.Files).toEqual([
@@ -851,20 +948,12 @@ describe("messageHandler stream ack routing", () => {
           filename: "example.png",
           mimeType: "image/png",
           sizeBytes: 2048,
-          downloadUrl: "https://files.example.com/signed-image.png",
-          url: "https://files.example.com/signed-image.png",
+          downloadUrl: expectedUrl,
+          url: expectedUrl,
         },
       ]);
       const bodyForAgent = capturedContext.BodyForAgent;
       expect(bodyForAgent).toBe("can you inspect this image");
-      const untrustedContextValue = capturedContext.UntrustedContext;
-      expect(Array.isArray(untrustedContextValue)).toBe(true);
-      if (!Array.isArray(untrustedContextValue)) {
-        return;
-      }
-      expect(untrustedContextValue.join("\n")).toContain(
-        "url: https://files.example.com/signed-image.png",
-      );
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -927,5 +1016,95 @@ describe("messageHandler stream ack routing", () => {
     }
 
     expect(capturedContext.OwnerAllowFrom).toEqual(["user_1"]);
+  });
+
+  test("treats agent dm roots as direct messages with an explicit reply target", async () => {
+    let capturedContext: Record<string, unknown> | null = null;
+
+    const outbound: StreamOutbound = {
+      startStream(): boolean {
+        return true;
+      },
+      streamToken(): boolean {
+        return true;
+      },
+      streamEvent(): boolean {
+        return true;
+      },
+      streamHeartbeat(): boolean {
+        return true;
+      },
+      finishStream(): boolean {
+        return true;
+      },
+    };
+
+    const runtime: PluginRuntime = {
+      channel: {
+        reply: {
+          finalizeInboundContext(
+            ctx: Record<string, unknown>,
+          ): Record<string, unknown> {
+            capturedContext = ctx;
+            return ctx;
+          },
+          dispatchReplyWithBufferedBlockDispatcher(): Promise<void> {
+            return Promise.resolve();
+          },
+        },
+      },
+    };
+
+    handleInboundMessage({
+      msg: createMessage("msg_placeholder", {
+        channelId: "ch_dm",
+        channelName: "Type",
+        channelType: "agent_dm",
+        chatType: "dm",
+        content: "can you take a look",
+        conversationRootMessageId: "msg_user_root",
+        replyTarget: {
+          channelId: "ch_dm",
+          parentMessageId: "msg_user_root",
+        },
+        context: {
+          triggeringUser: {
+            id: "user_1",
+            name: "Alice",
+          },
+          channel: {
+            id: "ch_dm",
+            name: "Type",
+            description: null,
+            visibility: "private",
+            channelType: "agent_dm",
+            members: [],
+          },
+          thread: null,
+          recentMessages: null,
+        },
+      }),
+      accountId: "acct_1",
+      cfg: {},
+      runtime,
+      outbound,
+    });
+
+    expect(capturedContext).not.toBeNull();
+    if (!capturedContext) {
+      return;
+    }
+
+    expect(capturedContext.ChatType).toBe("direct");
+    expect(capturedContext.To).toBe("ch_dm");
+    expect(capturedContext.MessageThreadId).toBe("msg_user_root");
+    expect(capturedContext.ReplyToId).toBe("msg_user_root");
+    expect(capturedContext.SessionKey).toBe("agent:main:type:msg_user_root");
+    expect(capturedContext.TypeChannelType).toBe("agent_dm");
+    expect(capturedContext.TypeConversationRootMessageId).toBe("msg_user_root");
+    expect(capturedContext.TypeReplyTarget).toEqual({
+      channelId: "ch_dm",
+      parentMessageId: "msg_user_root",
+    });
   });
 });

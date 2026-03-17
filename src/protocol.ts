@@ -28,6 +28,7 @@ const typeChannelContextSchema = z.object({
   name: z.string(),
   description: z.string().nullable(),
   visibility: z.enum(["public", "private"]),
+  channelType: z.enum(["default", "alert", "agent_dm"]).optional(),
   members: z.array(typeChannelMemberSchema),
 });
 
@@ -65,7 +66,13 @@ const typeMessageEventSchema = z.object({
   messageId: z.string(),
   channelId: z.string(),
   channelName: z.string().nullable(),
+  channelType: z.enum(["default", "alert", "agent_dm"]),
   parentMessageId: z.string().nullable(),
+  conversationRootMessageId: z.string().nullable(),
+  replyTarget: z.object({
+    channelId: z.string(),
+    parentMessageId: z.string().nullable(),
+  }),
   chatType: z.enum(["channel", "thread", "dm"]),
   sender: z
     .object({

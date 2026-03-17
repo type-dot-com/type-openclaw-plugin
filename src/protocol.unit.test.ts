@@ -9,7 +9,13 @@ describe("typeInboundEventSchema", () => {
         messageId: "msg_abc123",
         channelId: "ch_456",
         channelName: "general",
+        channelType: "default",
         parentMessageId: null,
+        conversationRootMessageId: null,
+        replyTarget: {
+          channelId: "ch_456",
+          parentMessageId: null,
+        },
         chatType: "channel",
         sender: { id: "user_1", name: "Alice" },
         content: "Hello world",
@@ -29,7 +35,13 @@ describe("typeInboundEventSchema", () => {
         messageId: "msg_abc123",
         channelId: "ch_456",
         channelName: null,
+        channelType: "default",
         parentMessageId: "msg_parent",
+        conversationRootMessageId: "msg_parent",
+        replyTarget: {
+          channelId: "ch_456",
+          parentMessageId: "msg_parent",
+        },
         chatType: "thread",
         sender: null,
         content: null,
@@ -46,7 +58,13 @@ describe("typeInboundEventSchema", () => {
         messageId: "msg_abc123",
         channelId: "ch_456",
         channelName: "general",
+        channelType: "agent_dm",
         parentMessageId: "msg_parent",
+        conversationRootMessageId: "msg_parent",
+        replyTarget: {
+          channelId: "ch_456",
+          parentMessageId: "msg_parent",
+        },
         chatType: "thread",
         sender: { id: "user_1", name: "Alice" },
         content: "Please summarize this thread",
@@ -62,6 +80,7 @@ describe("typeInboundEventSchema", () => {
             name: "general",
             description: "General chat",
             visibility: "public",
+            channelType: "agent_dm",
             members: [
               {
                 id: "user_1",
@@ -93,6 +112,58 @@ describe("typeInboundEventSchema", () => {
       });
 
       expect(result.success).toBe(true);
+    });
+
+    it("parses an agent dm root event with an explicit reply target", () => {
+      const result = typeInboundEventSchema.safeParse({
+        type: "message",
+        messageId: "msg_root",
+        channelId: "ch_dm",
+        channelName: "Type",
+        channelType: "agent_dm",
+        parentMessageId: null,
+        conversationRootMessageId: "msg_user_root",
+        replyTarget: {
+          channelId: "ch_dm",
+          parentMessageId: "msg_user_root",
+        },
+        chatType: "dm",
+        sender: { id: "user_1", name: "Alice" },
+        content: "help me debug this",
+        mentionsAgent: true,
+        timestamp: Date.now(),
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it("strips legacy agent session ids from message events", () => {
+      const result = typeInboundEventSchema.safeParse({
+        type: "message",
+        messageId: "msg_root",
+        channelId: "ch_dm",
+        channelName: "Type",
+        channelType: "agent_dm",
+        parentMessageId: null,
+        conversationRootMessageId: "msg_user_root",
+        replyTarget: {
+          channelId: "ch_dm",
+          parentMessageId: "msg_user_root",
+        },
+        chatType: "dm",
+        agentChatSessionId: "agsess_legacy",
+        sender: { id: "user_1", name: "Alice" },
+        content: "help me debug this",
+        mentionsAgent: true,
+        timestamp: Date.now(),
+      });
+
+      expect(result.success).toBe(true);
+      if (!result.success) {
+        return;
+      }
+
+      expect("agentChatSessionId" in result.data).toBe(false);
     });
 
     it("rejects a message event missing required fields", () => {
