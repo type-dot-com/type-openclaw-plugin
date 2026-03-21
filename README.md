@@ -76,7 +76,7 @@ Each account key (e.g. `"default"`, `"code-agent"`) names a separate WebSocket c
 | `mediaLocalRoots` | No | Allowed local directories for `sendMedia` local file paths |
 | `ownerAllowFrom` | No | Type user IDs that should be treated as owner senders for owner-only OpenClaw tools |
 
-> **Note:** Set `agents.defaults.verboseDefault` to `"on"` in your OpenClaw config to enable streaming via `onPartialReply` callbacks.
+> **Note:** Set `agents.defaults.verboseDefault` to `"full"` in your OpenClaw config to enable streaming with full tool output via `deliver` callbacks.
 >
 > Legacy single-account config (flat `token`/`wsUrl`/`agentId` at the `type` level) is still supported but deprecated.
 

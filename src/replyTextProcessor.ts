@@ -96,26 +96,28 @@ export class ReplyTextProcessor {
     const isAskUser =
       ASK_USER_TOOL_NAMES.has(normalizedName) ||
       (normalizedName === "tool" &&
-        ASK_USER_TOOL_NAMES.has(parsed.toolOutput.toLowerCase().trim()));
+        ASK_USER_TOOL_NAMES.has(parsed.toolSummary.toLowerCase().trim()));
 
     if (isAskUser) {
       this.#needsReply = true;
-      const trimmedOutput = parsed.toolOutput.trim();
-      const outputIsToolName =
+      const trimmedSummary = parsed.toolSummary.trim();
+      const summaryIsToolName =
         normalizedName === "tool" &&
-        ASK_USER_TOOL_NAMES.has(trimmedOutput.toLowerCase());
+        ASK_USER_TOOL_NAMES.has(trimmedSummary.toLowerCase());
       // OpenClaw calls deliver before execute, so the pending question
       // may not be stored yet. Wait briefly for execute to catch up.
       this.#needsReplyQuestion =
         (await waitForPendingAskUserQuestion(
           opts?.toolCallId,
           this.#scopeId,
-        )) || (outputIsToolName ? undefined : trimmedOutput || undefined);
+        )) || (summaryIsToolName ? undefined : trimmedSummary || undefined);
       this.#session.resetTextAccumulator();
       return true;
     }
 
-    const [toolCall, toolResult] = createToolEvents(text);
+    const [toolCall, toolResult] = createToolEvents(text, {
+      toolCallId: opts?.toolCallId,
+    });
     this.#session.sendToolEvent(toolCall);
     this.#session.sendToolEvent(toolResult);
     this.#session.resetTextAccumulator();

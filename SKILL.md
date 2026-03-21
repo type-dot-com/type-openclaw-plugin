@@ -10,7 +10,7 @@ Connect OpenClaw agents to Type team chat via a duplex WebSocket.
 {
   "agents": {
     "defaults": {
-      "verboseDefault": "on"
+      "verboseDefault": "full"
     }
   },
   "channels": {
@@ -31,7 +31,7 @@ Connect OpenClaw agents to Type team chat via a duplex WebSocket.
 }
 ```
 
-**`agents.defaults.verboseDefault`** must be set to `"on"`. This enables `onToolResult` callbacks so tool outputs can be streamed to Type.
+**`agents.defaults.verboseDefault`** must be set to `"full"`. This enables full tool output delivery — each tool's actual result (not just a summary) is included in the `deliver` callback payload. Output may arrive as a code-fenced block (e.g., `Read`) or as inline multiline content (e.g., `Browser` emits raw JSON on subsequent lines). The plugin handles both formats.
 
 #### Multi-account support
 
@@ -290,7 +290,8 @@ When a message trigger arrives from Type, the plugin builds an OpenClaw inbound 
 
 ### No streaming (response arrives all at once)
 
-- Ensure `agents.defaults.verboseDefault` is `"on"` in `~/.openclaw/openclaw.json`
+- Ensure `agents.defaults.verboseDefault` is `"full"` in `~/.openclaw/openclaw.json`
+- With `"on"` instead of `"full"`, streaming works but tool results will only show summaries (no actual output)
 - For short responses, `onPartialReply` may fire only once — this is expected
 
 ### Agent doesn't respond at all

@@ -311,7 +311,19 @@ describe("ReplyTextProcessor", () => {
       }
     });
 
-    test("returns false for non-ask_user tools", async () => {
+    test("returns false for non-ask_user tools with full output", async () => {
+      const session = createMockSession();
+      const processor = new ReplyTextProcessor(session, () => {});
+
+      const intercepted = await processor.handleToolDelivery(
+        "search: query results\n```txt\nresult data\n```",
+      );
+      expect(intercepted).toBe(false);
+      expect(processor.result.needsReply).toBe(false);
+      expect(session.toolEvents.length).toBeGreaterThan(0);
+    });
+
+    test("emits tool events for summary-only delivers too", async () => {
       const session = createMockSession();
       const processor = new ReplyTextProcessor(session, () => {});
 

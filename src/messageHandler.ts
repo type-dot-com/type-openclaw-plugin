@@ -103,42 +103,29 @@ const FILE_URL_FETCH_TIMEOUT_MS = 10_000;
 const downloadUrlResponseSchema = z.object({
   downloadUrl: z.string().url().optional(),
 });
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function resolveToolCallId(info: Record<string, unknown>): string | undefined {
+  for (const key of ["toolCallId", "tool_call_id", "callId", "call_id"]) {
+    const val = info[key];
+    if (typeof val === "string" && val.length > 0) return val;
+  }
+  for (const key of ["tool", "payload", "event"]) {
+    const nested = info[key];
+    if (!isRecord(nested)) continue;
+    for (const k of ["toolCallId", "tool_call_id", "callId", "call_id"]) {
+      const val = nested[k];
+      if (typeof val === "string" && val.length > 0) return val;
+    }
+  }
+  return undefined;
+}
+
 type ThreadTriggerContext = NonNullable<
   NonNullable<TypeMessageEvent["context"]>["thread"]
 >;
-
-function resolveToolCallId(info: Record<string, unknown>): string | undefined {
-  const directCandidates = [
-    info.toolCallId,
-    info.tool_call_id,
-    info.callId,
-    info.call_id,
-  ];
-  for (const candidate of directCandidates) {
-    if (typeof candidate === "string" && candidate.length > 0) {
-      return candidate;
-    }
-  }
-
-  const nestedCandidates = [info.tool, info.payload, info.event];
-  for (const nested of nestedCandidates) {
-    if (!nested || typeof nested !== "object") continue;
-    const nestedRecord = nested as Record<string, unknown>;
-    const nestedDirect = [
-      nestedRecord.toolCallId,
-      nestedRecord.tool_call_id,
-      nestedRecord.callId,
-      nestedRecord.call_id,
-    ];
-    for (const candidate of nestedDirect) {
-      if (typeof candidate === "string" && candidate.length > 0) {
-        return candidate;
-      }
-    }
-  }
-
-  return undefined;
-}
 
 function resolveDownloadUrl(
   file: InboundFileWithDownloadUrl,
@@ -858,23 +845,12 @@ export function handleInboundMessage(params: {
                         processor.markToolEventSeen();
                         return;
                       }
-                      const intercepted = await processor.handleToolDelivery(
-                        payload.text,
-                        {
-                          toolCallId: resolveToolCallId(info),
-                        },
-                      );
-                      if (intercepted) return;
+                      await processor.handleToolDelivery(payload.text, {
+                        toolCallId: resolveToolCallId(info),
+                      });
                     },
-                    onSkip: (_payload, info) => {
-                      console.log(
-                        `[type] Reply skipped: ${JSON.stringify(info)}`,
-                      );
-                    },
+                    onSkip: (_payload, _info) => {},
                     onError: (err, info) => {
-                      console.error(
-                        `[type] Reply error: ${err} ${JSON.stringify(info)}`,
-                      );
                       captureException(
                         err instanceof Error ? err : new Error(String(err)),
                         { properties: { source: "reply_error", ...info } },
