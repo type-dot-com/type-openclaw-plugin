@@ -9,12 +9,12 @@
  * different Type agent.
  */
 
-import { defineChannelPluginEntry } from "openclaw/plugin-sdk/core";
 import { setPluginRuntime } from "./accountState.js";
 import { agentTools } from "./agentTools.js";
 import { fetchChannelsCached } from "./channels.js";
 import { inspectAccount, listAccountIds, resolveAccount } from "./config.js";
 import { startAccount } from "./gateway.js";
+import type { PluginRuntime } from "./messageHandler.js";
 import { sendMediaToType, sendTextToType } from "./outbound.js";
 import {
   isLikelyTypeTargetId,
@@ -210,13 +210,18 @@ const typePlugin = {
   },
 };
 
-export default defineChannelPluginEntry({
+export default {
   id: "type",
   name: "Type",
   description: "Type team chat integration via duplex WebSocket",
-  plugin: typePlugin,
-  setRuntime: (runtime) => setPluginRuntime(runtime),
-});
+  register(api: {
+    runtime: PluginRuntime;
+    registerChannel: (opts: { plugin: typeof typePlugin }) => void;
+  }) {
+    setPluginRuntime(api.runtime);
+    api.registerChannel({ plugin: typePlugin });
+  },
+};
 
 export type { TypeAccountConfig } from "./config.js";
 // Re-export components for advanced usage

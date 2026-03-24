@@ -5,7 +5,6 @@
  * streaming, or other heavy runtime dependencies.
  */
 
-import { defineSetupPluginEntry } from "openclaw/plugin-sdk/core";
 import {
   inspectAccount,
   listAccountIds,
@@ -35,4 +34,4 @@ const setupPlugin = {
   },
 };
 
-export default defineSetupPluginEntry(setupPlugin);
+export default setupPlugin;

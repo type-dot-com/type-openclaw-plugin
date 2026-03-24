@@ -6,7 +6,6 @@
   "channels": ["type"],
   "configSchema": {
     "type": "object",
-    "additionalProperties": false,
     "properties": {
       "type": {
         "type": "object",
