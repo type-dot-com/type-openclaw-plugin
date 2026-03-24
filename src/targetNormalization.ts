@@ -1,4 +1,4 @@
-const KNOWN_DIRECT_TARGET_PREFIXES = ["ch_", "agsess_", "dm_", "msg_"] as const;
+const KNOWN_DIRECT_TARGET_PREFIXES = ["ch_", "dm_", "msg_"] as const;
 
 /**
  * Normalize user/tool provided Type target strings into raw channel/session ids.

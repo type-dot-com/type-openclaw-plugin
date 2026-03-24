@@ -1,5 +1,6 @@
 {
   "id": "type",
+  "kind": "channel",
   "name": "Type",
   "description": "Type team chat integration",
   "channels": ["type"],
@@ -7,10 +8,20 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "enabled": { "type": "boolean" },
-      "token": { "type": "string" },
-      "wsUrl": { "type": "string" },
-      "agentId": { "type": "string" }
+      "type": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "token": { "type": "string" },
+          "wsUrl": { "type": "string" },
+          "agentId": { "type": "string" },
+          "ownerAllowFrom": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
     }
   }
 }

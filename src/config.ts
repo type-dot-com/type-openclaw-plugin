@@ -116,6 +116,30 @@ export function listAccountIds(cfg: Record<string, unknown>): string[] {
 }
 
 /**
+ * Non-destructive account inspection for setup flows.
+ *
+ * Returns config status without materializing secrets — safe to call
+ * during onboarding wizards where the full runtime isn't loaded.
+ */
+export function inspectAccount(
+  cfg: Record<string, unknown>,
+  accountId?: string,
+): {
+  enabled: boolean;
+  configured: boolean;
+  hasToken: boolean;
+  hasAgentId: boolean;
+} {
+  const account = resolveAccount(cfg, accountId);
+  return {
+    enabled: account.enabled,
+    configured: Boolean(account.token) && Boolean(account.agentId),
+    hasToken: Boolean(account.token),
+    hasAgentId: Boolean(account.agentId),
+  };
+}
+
+/**
  * Resolve account configuration from the OpenClaw global config.
  *
  * Multi-account: looks up by accountId in channels.type.accounts

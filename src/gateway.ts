@@ -23,6 +23,11 @@ import {
 } from "./messageHandler.js";
 import { TypeOutboundHandler } from "./outbound.js";
 import {
+  rejectAllPendingSendAcks,
+  rejectSendAck,
+  resolveSendAck,
+} from "./sendAckTracker.js";
+import {
   captureEvent,
   captureException,
   initializeTelemetry,
@@ -98,6 +103,17 @@ export async function startAccount(ctx: StartAccountContext): Promise<void> {
         if (reqType === "stream_start") {
           resolveStreamAck(messageId, accountId);
         }
+        if (reqType === "send" && event.requestId) {
+          resolveSendAck(accountId, event.requestId, {
+            messageId: event.messageId ?? "",
+            channelId: event.channelId ?? null,
+            parentMessageId: event.parentMessageId ?? null,
+            channelName: event.channelName ?? null,
+            channelType: event.channelType ?? null,
+            chatType: event.chatType ?? null,
+            timestamp: event.timestamp ?? null,
+          });
+        }
         return;
       }
       if (event.type === "error") {
@@ -145,6 +161,9 @@ export async function startAccount(ctx: StartAccountContext): Promise<void> {
         }
         if (event.requestType === "stream_start") {
           rejectStreamAck(error, event.messageId, accountId);
+        }
+        if (event.requestType === "send" && event.requestId) {
+          rejectSendAck(accountId, event.requestId, error);
         }
         return;
       }
@@ -274,6 +293,7 @@ export async function startAccount(ctx: StartAccountContext): Promise<void> {
         accountId,
         new Error(event.reason || "WebSocket disconnected"),
       );
+      rejectAllPendingSendAcks(accountId);
     },
   });
 
@@ -289,6 +309,7 @@ export async function startAccount(ctx: StartAccountContext): Promise<void> {
       captureEvent("account_shutdown", { accountId, agentId });
       state.connectionState = "disconnected";
       failStreamSessionsForAccount(accountId, new Error("Account shutdown"));
+      rejectAllPendingSendAcks(accountId);
       connection.disconnect();
       teardownTelemetry(agentId);
       state.connection = null;

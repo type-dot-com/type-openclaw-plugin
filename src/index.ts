@@ -9,12 +9,12 @@
  * different Type agent.
  */
 
+import { defineChannelPluginEntry } from "openclaw/plugin-sdk/core";
 import { setPluginRuntime } from "./accountState.js";
 import { agentTools } from "./agentTools.js";
 import { fetchChannelsCached } from "./channels.js";
-import { listAccountIds, resolveAccount } from "./config.js";
+import { inspectAccount, listAccountIds, resolveAccount } from "./config.js";
 import { startAccount } from "./gateway.js";
-import type { PluginRuntime } from "./messageHandler.js";
 import { sendMediaToType, sendTextToType } from "./outbound.js";
 import {
   isLikelyTypeTargetId,
@@ -42,10 +42,29 @@ const typePlugin = {
     listAccountIds: (cfg: Record<string, unknown>) => listAccountIds(cfg),
     resolveAccount: (cfg: Record<string, unknown>, accountId?: string) =>
       resolveAccount(cfg, accountId),
+    inspectAccount: (cfg: Record<string, unknown>, accountId?: string) =>
+      inspectAccount(cfg, accountId),
     isConfigured: (
       account: { token?: string },
       _cfg: Record<string, unknown>,
     ): boolean => Boolean(account.token),
+  },
+
+  security: {
+    dm: {
+      channelKey: "type",
+      resolvePolicy: (account: { ownerAllowFrom?: readonly string[] }) =>
+        account.ownerAllowFrom && account.ownerAllowFrom.length > 0
+          ? ("allowlist" as const)
+          : ("open" as const),
+      resolveAllowFrom: (account: { ownerAllowFrom?: readonly string[] }) =>
+        account.ownerAllowFrom ? [...account.ownerAllowFrom] : [],
+      defaultPolicy: "open" as const,
+    },
+  },
+
+  threading: {
+    topLevelReplyToMode: "thread" as const,
   },
 
   directory: {
@@ -152,7 +171,7 @@ const typePlugin = {
   messaging: {
     normalizeTarget: (raw: string): string => normalizeTypeTarget(raw),
     targetResolver: {
-      hint: "Use a Type target id (for example `ch_*` or `agsess_*`).",
+      hint: "Use the `target_channel_id` field (`ch_*`) as `to`. To reply in a thread, set `replyToId` to the `target_thread_id` field (`msg_*`). Never use channel names as targets.",
       looksLikeId: (raw: string, normalized: string): boolean =>
         isLikelyTypeTargetId(raw) || isLikelyTypeTargetId(normalized),
     },
@@ -191,24 +210,13 @@ const typePlugin = {
   },
 };
 
-/**
- * OpenClaw plugin entry point.
- * Follows the object-with-register pattern from openclaw/plugin-sdk.
- */
-const plugin = {
+export default defineChannelPluginEntry({
   id: "type",
   name: "Type",
   description: "Type team chat integration via duplex WebSocket",
-  register(api: {
-    runtime: PluginRuntime;
-    registerChannel: (opts: { plugin: typeof typePlugin }) => void;
-  }) {
-    setPluginRuntime(api.runtime);
-    api.registerChannel({ plugin: typePlugin });
-  },
-};
-
-export default plugin;
+  plugin: typePlugin,
+  setRuntime: (runtime) => setPluginRuntime(runtime),
+});
 
 export type { TypeAccountConfig } from "./config.js";
 // Re-export components for advanced usage

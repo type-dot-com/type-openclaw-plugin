@@ -100,6 +100,15 @@ const typeSuccessEventSchema = z.object({
   type: z.literal("success"),
   requestType: z.string(),
   messageId: z.string().optional(),
+  requestId: z.string().optional(),
+  channelId: z.string().nullable().optional(),
+  parentMessageId: z.string().nullable().optional(),
+  channelName: z.string().nullable().optional(),
+  channelType: z
+    .enum(["default", "alert", "agent_dm", "webhook", "rss"])
+    .optional(),
+  chatType: z.enum(["channel", "thread", "dm"]).optional(),
+  timestamp: z.number().optional(),
 });
 
 const typeErrorEventSchema = z.object({
@@ -107,6 +116,7 @@ const typeErrorEventSchema = z.object({
   requestType: z.string(),
   error: z.string(),
   messageId: z.string().optional(),
+  requestId: z.string().optional(),
   details: z.unknown().optional(),
 });
 
@@ -155,6 +165,7 @@ export interface SendMessage {
   content: string;
   parentMessageId?: string;
   fileIds?: string[];
+  requestId?: string;
 }
 
 export interface RespondMessage {

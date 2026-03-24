@@ -36,7 +36,7 @@ export interface PluginRuntime {
           onError?: (err: unknown, info: Record<string, unknown>) => void;
         };
         replyOptions?: Record<string, unknown>;
-      }) => Promise<void>;
+      }) => Promise<unknown>;
     };
   };
 }
@@ -321,6 +321,7 @@ function buildThreadBodies(
 }
 
 function buildUntrustedContext(params: {
+  msg: TypeMessageEvent;
   channelContext:
     | NonNullable<NonNullable<TypeMessageEvent["context"]>["channel"]>
     | null
@@ -329,7 +330,15 @@ function buildUntrustedContext(params: {
   files: InboundFileWithDownloadUrl[] | undefined;
 }): string[] | undefined {
   const entries: string[] = [];
-  const { channelContext, threadContext, files } = params;
+  const { msg, channelContext, threadContext, files } = params;
+
+  // Always surface routing IDs so the LLM can use them for message.send.
+  const routingLines = ["Routing IDs (use these for message.send):"];
+  routingLines.push(`- channel_id: ${msg.replyTarget.channelId}`);
+  if (msg.replyTarget.parentMessageId) {
+    routingLines.push(`- thread_id: ${msg.replyTarget.parentMessageId}`);
+  }
+  entries.push(routingLines.join("\n"));
 
   if (channelContext) {
     const lines = ["Channel metadata (untrusted):"];
@@ -752,6 +761,7 @@ export function handleInboundMessage(params: {
       const { threadStarterBody, threadHistoryBody } =
         buildThreadBodies(threadContext);
       const untrustedContext = buildUntrustedContext({
+        msg,
         channelContext,
         threadContext,
         files: effectiveFiles,
@@ -794,6 +804,7 @@ export function handleInboundMessage(params: {
         InboundHistory: inboundHistory.length > 0 ? inboundHistory : undefined,
         ThreadStarterBody: threadStarterBody,
         ThreadHistoryBody: threadHistoryBody,
+        NativeChannelId: msg.replyTarget.channelId,
         MessageThreadId: replyParentMessageId,
         ReplyToId: replyParentMessageId,
         UntrustedContext: untrustedContext,

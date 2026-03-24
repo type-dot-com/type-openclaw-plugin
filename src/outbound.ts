@@ -5,6 +5,7 @@
  * messages and streaming responses back to Type.
  */
 
+import { randomUUID } from "node:crypto";
 import {
   getAccountContextForAccount,
   getOutboundForAccount,
@@ -18,6 +19,7 @@ import {
   resolveEffectiveMediaLocalRoots,
   uploadMediaForType,
 } from "./mediaUpload.js";
+import { waitForSendAck } from "./sendAckTracker.js";
 
 export class TypeOutboundHandler {
   constructor(private readonly connection: TypeConnection) {}
@@ -43,20 +45,24 @@ export class TypeOutboundHandler {
 
   /**
    * Send a proactive message to a channel.
+   * Returns the requestId for ACK correlation alongside the send status.
    */
   sendMessage(
     channelId: string,
     content: string,
     parentMessageId?: string,
     fileIds?: string[],
-  ): boolean {
-    return this.connection.send({
+  ): { sent: boolean; requestId: string } {
+    const requestId = randomUUID();
+    const sent = this.connection.send({
       type: "send",
       channelId,
       content,
       parentMessageId,
+      requestId,
       ...(fileIds?.length ? { fileIds } : {}),
     });
+    return { sent, requestId };
   }
 
   /**
@@ -122,16 +128,69 @@ export class TypeOutboundHandler {
   }
 }
 
+export type SendSuccessResult = {
+  ok: true;
+  channel: string;
+  messageId: string;
+  channelId: string | null;
+  parentMessageId: string | null;
+  channelName: string | null;
+  channelType: string | null;
+  chatType: string | null;
+  timestamp: number | null;
+};
+
+export type SendResult = SendSuccessResult | { ok: false; error: string };
+
+function fromAckResult(params: {
+  ackResult: Awaited<ReturnType<typeof waitForSendAck>>;
+  channelId: string;
+  parentMessageId?: string;
+}): SendResult {
+  if (params.ackResult.ok) {
+    return {
+      ok: true,
+      channel: "type",
+      messageId: params.ackResult.ack.messageId,
+      channelId: params.ackResult.ack.channelId,
+      parentMessageId: params.ackResult.ack.parentMessageId,
+      channelName: params.ackResult.ack.channelName,
+      channelType: params.ackResult.ack.channelType,
+      chatType: params.ackResult.ack.chatType,
+      timestamp: params.ackResult.ack.timestamp,
+    };
+  }
+
+  if (params.ackResult.reason === "timeout") {
+    return {
+      ok: true,
+      channel: "type",
+      messageId: "",
+      channelId: params.channelId,
+      parentMessageId: params.parentMessageId ?? null,
+      channelName: null,
+      channelType: null,
+      chatType: null,
+      timestamp: null,
+    };
+  }
+
+  return {
+    ok: false,
+    error: params.ackResult.error.message,
+  };
+}
+
 export async function sendTextToType(params: {
   to: string;
   text: string;
   replyToId?: string;
   cfg?: Record<string, unknown>;
   accountId?: string | null;
-}): Promise<{ ok: true; channel: string } | { ok: false; error: string }> {
+}): Promise<SendResult> {
   const effectiveAccountId = resolveEffectiveAccountId(params.accountId);
   const outbound = getOutboundForAccount(effectiveAccountId);
-  if (!outbound) {
+  if (!outbound || !effectiveAccountId) {
     return { ok: false, error: "Not connected" };
   }
   try {
@@ -154,7 +213,7 @@ export async function sendTextToType(params: {
     if (!routingResult.ok) {
       return routingResult;
     }
-    const sent = outbound.sendMessage(
+    const { sent, requestId } = outbound.sendMessage(
       channelId,
       params.text,
       routingResult.parentMessageId,
@@ -162,7 +221,12 @@ export async function sendTextToType(params: {
     if (!sent) {
       return { ok: false, error: "Failed to send message" };
     }
-    return { ok: true, channel: "type" };
+    const ackResult = await waitForSendAck(effectiveAccountId, requestId);
+    return fromAckResult({
+      ackResult,
+      channelId,
+      parentMessageId: routingResult.parentMessageId,
+    });
   } catch (err) {
     return {
       ok: false,
@@ -179,10 +243,10 @@ export async function sendMediaToType(params: {
   replyToId?: string;
   cfg?: Record<string, unknown>;
   accountId?: string | null;
-}): Promise<{ ok: true; channel: string } | { ok: false; error: string }> {
+}): Promise<SendResult> {
   const effectiveAccountId = resolveEffectiveAccountId(params.accountId);
   const outbound = getOutboundForAccount(effectiveAccountId);
-  if (!outbound) {
+  if (!outbound || !effectiveAccountId) {
     return { ok: false, error: "Not connected" };
   }
   try {
@@ -220,7 +284,7 @@ export async function sendMediaToType(params: {
 
     const caption =
       params.text.trim().length > 0 ? params.text : "Sent an attachment.";
-    const sent = outbound.sendMessage(
+    const { sent, requestId } = outbound.sendMessage(
       channelId,
       caption,
       routingResult.parentMessageId,
@@ -229,7 +293,12 @@ export async function sendMediaToType(params: {
     if (!sent) {
       return { ok: false, error: "Failed to send message" };
     }
-    return { ok: true, channel: "type" };
+    const ackResult = await waitForSendAck(effectiveAccountId, requestId);
+    return fromAckResult({
+      ackResult,
+      channelId,
+      parentMessageId: routingResult.parentMessageId,
+    });
   } catch (err) {
     return {
       ok: false,

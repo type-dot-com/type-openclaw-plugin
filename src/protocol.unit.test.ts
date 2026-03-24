@@ -137,7 +137,7 @@ describe("typeInboundEventSchema", () => {
       expect(result.success).toBe(true);
     });
 
-    it("strips legacy agent session ids from message events", () => {
+    it("strips unknown fields from message events", () => {
       const result = typeInboundEventSchema.safeParse({
         type: "message",
         messageId: "msg_root",
@@ -151,7 +151,7 @@ describe("typeInboundEventSchema", () => {
           parentMessageId: "msg_user_root",
         },
         chatType: "dm",
-        agentChatSessionId: "agsess_legacy",
+        unknownExtraField: "should_be_stripped",
         sender: { id: "user_1", name: "Alice" },
         content: "help me debug this",
         mentionsAgent: true,
@@ -163,7 +163,7 @@ describe("typeInboundEventSchema", () => {
         return;
       }
 
-      expect("agentChatSessionId" in result.data).toBe(false);
+      expect("unknownExtraField" in result.data).toBe(false);
     });
 
     it("rejects a message event missing required fields", () => {

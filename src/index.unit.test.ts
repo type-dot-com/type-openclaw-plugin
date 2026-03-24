@@ -4,6 +4,7 @@ import plugin from "./index.js";
 import { handleInboundMessage, type PluginRuntime } from "./messageHandler.js";
 import type { TypeOutboundHandler } from "./outbound.js";
 import type { TypeMessageEvent } from "./protocol.js";
+import { rejectSendAck, resolveSendAck } from "./sendAckTracker.js";
 import type { StreamOutbound } from "./streamSession.js";
 
 const TEST_ACCOUNT_ID = "acct_test";
@@ -89,21 +90,49 @@ function createMessage(
 
 function installMockOutbound(): {
   calls: Array<[string, string, string | undefined, string[] | undefined]>;
+};
+function installMockOutbound(options?: {
+  ack?: "success" | "error";
+  errorMessage?: string;
+}): {
+  calls: Array<[string, string, string | undefined, string[] | undefined]>;
 } {
   const calls: Array<
     [string, string, string | undefined, string[] | undefined]
   > = [];
   const state = getAccountState(TEST_ACCOUNT_ID);
   state.connectionState = "connected";
+  let requestCounter = 0;
   state.outbound = {
     sendMessage(
       channelId: string,
       content: string,
       parentMessageId?: string,
       fileIds?: string[],
-    ): boolean {
+    ): { sent: boolean; requestId: string } {
       calls.push([channelId, content, parentMessageId, fileIds]);
-      return true;
+      const requestId = `mock-request-id-${requestCounter++}`;
+      queueMicrotask(() => {
+        if (options?.ack === "error") {
+          rejectSendAck(
+            TEST_ACCOUNT_ID,
+            requestId,
+            new Error(options.errorMessage ?? "Channel not found"),
+          );
+          return;
+        }
+
+        resolveSendAck(TEST_ACCOUNT_ID, requestId, {
+          messageId: `mock-msg-${requestCounter}`,
+          channelId,
+          parentMessageId: parentMessageId ?? null,
+          channelName: null,
+          channelType: null,
+          chatType: null,
+          timestamp: null,
+        });
+      });
+      return { sent: true, requestId };
     },
   } as unknown as TypeOutboundHandler;
 
@@ -146,7 +175,7 @@ describe("type outbound reply routing", () => {
       accountId: TEST_ACCOUNT_ID,
     });
 
-    expect(result).toEqual({ ok: true, channel: "type" });
+    expect(result.ok).toBe(true);
     expect(calls).toEqual([
       ["ch_shared", "reply", "msg_explicit_parent", undefined],
     ]);
@@ -159,10 +188,7 @@ describe("type outbound reply routing", () => {
       return;
     }
 
-    let result:
-      | { ok: true; channel: string }
-      | { ok: false; error: string }
-      | null = null;
+    let result: { ok: boolean } | null = null;
     const dispatchRuntime: PluginRuntime = {
       channel: {
         reply: {
@@ -200,10 +226,11 @@ describe("type outbound reply routing", () => {
       outbound: createInboundOutbound(),
     });
 
-    await Promise.resolve();
-    await Promise.resolve();
+    // sendTextToType now awaits server ACK, so needs extra microtask ticks
+    for (let i = 0; i < 10; i++) await Promise.resolve();
 
-    expect(result).toEqual({ ok: true, channel: "type" });
+    expect(result).not.toBeNull();
+    expect(result?.ok).toBe(true);
     expect(calls).toEqual([["ch_thread", "reply", "msg_parent", undefined]]);
   });
 
@@ -214,10 +241,7 @@ describe("type outbound reply routing", () => {
       return;
     }
 
-    let result:
-      | { ok: true; channel: string }
-      | { ok: false; error: string }
-      | null = null;
+    let result: { ok: boolean } | null = null;
     const dispatchRuntime: PluginRuntime = {
       channel: {
         reply: {
@@ -263,5 +287,26 @@ describe("type outbound reply routing", () => {
       error: "Explicit reply target is required for this Type conversation",
     });
     expect(calls).toEqual([]);
+  });
+
+  test("surfaces server send errors instead of treating them as success", async () => {
+    const { calls } = installMockOutbound({
+      ack: "error",
+      errorMessage: "Channel not found",
+    });
+    expect(registeredPlugin).not.toBeNull();
+    if (!registeredPlugin) {
+      return;
+    }
+
+    const result = await registeredPlugin.outbound.sendText({
+      to: "ch_shared",
+      text: "reply",
+      cfg,
+      accountId: TEST_ACCOUNT_ID,
+    });
+
+    expect(result).toEqual({ ok: false, error: "Channel not found" });
+    expect(calls).toEqual([["ch_shared", "reply", undefined, undefined]]);
   });
 });
