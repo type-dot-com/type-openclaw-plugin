@@ -95,7 +95,7 @@ The connection auto-reconnects with exponential backoff (1s base, 60s max, with 
 
 ### Message Flow
 
-1. User mentions the agent in Type (channel or DM)
+1. User mentions the agent in Type (channel or DM), or a task trigger fires (e.g. channel_message task)
 2. Type creates a streaming placeholder message and sends a `message` trigger over WS
 3. Plugin dispatches through OpenClaw's standard agent reply pipeline
 4. Agent generates response; `onPartialReply` fires with accumulated text
@@ -208,8 +208,31 @@ When a message trigger arrives from Type, the plugin builds an OpenClaw inbound 
 | Field | Type | Description |
 |-------|------|-------------|
 | `OwnerAllowFrom` | `string[] \| undefined` | Type user IDs treated as owners (from account config `ownerAllowFrom`) |
-| `UntrustedContext` | `string[] \| undefined` | Human-readable text blocks summarizing channel metadata, thread metadata, and file listings. Marked "untrusted" because the content originates from user-generated data |
+| `UntrustedContext` | `string[] \| undefined` | Human-readable text blocks summarizing channel metadata, thread metadata, file listings, and task metadata. Marked "untrusted" because the content originates from user-generated data |
 | `TypeTriggerContext` | `object \| null` | Raw Type trigger context containing `triggeringUser`, `channel` (name, description, visibility, members with roles), `thread` (parentMessageId, title, messages), and `recentMessages` |
+
+### Task Metadata
+
+When a message trigger is dispatched by a Type task (e.g. a `channel_message` task watching a channel), the trigger event includes a `task` object with the task ID and instructions. The plugin surfaces these in the `UntrustedContext` block and as dedicated context fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `TypeTaskId` | `string \| null` | Task ID that triggered this dispatch, or `null` if triggered by a direct @mention |
+| `TypeTaskInstructions` | `string \| null` | Task-specific instructions configured in Type, or `null` if none |
+
+In the `UntrustedContext` block, task metadata appears as:
+
+```
+Task metadata (untrusted):
+- Task ID: atask_...
+- Instructions:
+<task instructions content>
+```
+
+Tasks are configured in the Type UI under the agent's "Tasks" tab. Common task triggers include:
+- **Channel messages**: fires when a message is posted in selected channels
+- **Schedule**: fires on a recurring schedule
+- **Ambient**: monitors workspace activity
 
 ## WebSocket Message Reference
 

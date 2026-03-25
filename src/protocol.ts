@@ -85,6 +85,12 @@ const typeMessageEventSchema = z.object({
   timestamp: z.number(),
   context: typeTriggerContextSchema.nullable().optional(),
   files: z.array(typeTriggerFileSchema).optional(),
+  task: z
+    .object({
+      id: z.string(),
+      instructions: z.string().nullable(),
+    })
+    .optional(),
 });
 
 const typePingEventSchema = z.object({

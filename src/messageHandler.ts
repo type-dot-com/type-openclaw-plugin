@@ -374,6 +374,15 @@ function buildUntrustedContext(params: {
     entries.push(["Attached files (untrusted):", ...fileLines].join("\n"));
   }
 
+  if (msg.task) {
+    const lines = ["Task metadata (untrusted):"];
+    lines.push(`- Task ID: ${msg.task.id}`);
+    if (msg.task.instructions) {
+      lines.push(`- Instructions:\n${msg.task.instructions}`);
+    }
+    entries.push(lines.join("\n"));
+  }
+
   return entries.length > 0 ? entries : undefined;
 }
 
@@ -822,6 +831,8 @@ export function handleInboundMessage(params: {
         TypeConversationRootMessageId: msg.conversationRootMessageId,
         TypeReplyTarget: msg.replyTarget,
         TypeTriggerContext: msg.context ?? null,
+        TypeTaskId: msg.task?.id ?? null,
+        TypeTaskInstructions: msg.task?.instructions ?? null,
       });
 
       const session = new StreamSession(outbound, msg.messageId);
