@@ -1,8 +1,11 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
     "incremental": true,
-    "noEmit": true,
+    "outDir": "../../.cache/typecheck/packages-openclaw-type",
     "tsBuildInfoFile": "../../.cache/typecheck/packages-openclaw-type.tsbuildinfo"
   }
 }
