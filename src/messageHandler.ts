@@ -299,14 +299,14 @@ function buildThreadBodies(
     threadContext?.messages.filter(
       (message) => message.content.trim().length > 0,
     ) ?? [];
-  const [starter, ...history] = threadMessages;
+  const starter = threadMessages[0];
 
   const threadStarterBody = starter?.content.trim()
     ? starter.content
     : undefined;
   const threadHistoryBody =
-    history.length > 0
-      ? history
+    threadMessages.length > 0
+      ? threadMessages
           .map((message) => {
             const entry = toInboundHistoryEntry(message);
             return `${entry.sender}: ${entry.body}`;
