@@ -130,6 +130,37 @@ Ask the user a question and wait for their reply. Use when clarification, approv
 |-----------|----------|-------------|
 | `question` | Yes | The question to ask the user |
 
+### `find_tools`
+
+Discover available integration tools for the current channel. Returns a list of services (e.g. `linear`, `github`, `google-calendar`) or, if a service is specified, the full tool schemas for that service. Call this to learn what integrations are available before using `call_tool`.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `service` | No | Service name to get detailed tool schemas for. Omit to list all available services. |
+
+### `call_tool`
+
+Execute an integration tool discovered via `find_tools`. Provide the service name, tool name, and arguments as returned by `find_tools`.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `service` | Yes | The service that owns the tool (e.g. `linear`, `github`) |
+| `name` | Yes | The tool name to execute (from `find_tools` results) |
+| `arguments` | No | Arguments for the tool call, matching the tool schema |
+
+### `list_databases`
+
+List PostgreSQL databases connected to this agent. Returns database names, tables, columns, and types. Call this first to discover available databases and their schemas before writing SQL queries.
+
+### `postgresql_query`
+
+Execute a read-only SQL SELECT query against a connected PostgreSQL database. Use `list_databases` first to discover available databases.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `integrationId` | Yes | The integration ID of the database to query (from `list_databases`) |
+| `query` | Yes | The SQL SELECT query to execute (max 10000 characters) |
+
 ## Inbound Context Reference
 
 When a message trigger arrives from Type, the plugin builds an OpenClaw inbound context payload with the following fields. See `messageHandler.ts` for the full construction.

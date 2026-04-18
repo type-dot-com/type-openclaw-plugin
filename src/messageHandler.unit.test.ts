@@ -670,7 +670,7 @@ describe("messageHandler stream ack routing", () => {
     );
     expect(capturedContext.ThreadStarterBody).toBe("What happened?");
     expect(capturedContext.ThreadHistoryBody).toBe(
-      "Assistant: A deployment failed.",
+      "Alice: What happened?\n\nAssistant: A deployment failed.",
     );
     expect(capturedContext.MessageThreadId).toBe("msg_parent");
     expect(capturedContext.ReplyToId).toBe("msg_parent");

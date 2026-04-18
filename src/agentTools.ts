@@ -7,6 +7,7 @@
 import { getAccountContextForAccount } from "./accountState.js";
 import { resolveApiOriginFromWsUrl } from "./apiOrigin.js";
 import { setPendingAskUserQuestion } from "./askUserState.js";
+import { getInboundRoutingContext } from "./inboundRoutingState.js";
 
 const FETCH_TIMEOUT_MS = 30_000;
 
@@ -37,6 +38,7 @@ function resolveApiContext(): {
  */
 async function callAgentApi(
   method: "GET" | "POST",
+  _toolCallId: string,
   path: string,
   label: string,
   body?: Record<string, unknown>,
@@ -51,7 +53,13 @@ async function callAgentApi(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(`${api.baseUrl}${path}`, {
+    const url = new URL(`${api.baseUrl}${path}`);
+    const channelId = getInboundRoutingContext()?.channelId;
+    if (channelId) {
+      url.searchParams.set("channelId", channelId);
+    }
+
+    const res = await fetch(url.toString(), {
       method,
       headers: api.headers,
       body: body ? JSON.stringify(body) : undefined,
@@ -121,6 +129,111 @@ export const agentTools = [
     },
   },
   {
+    name: "find_tools",
+    label: "Find Tools",
+    description:
+      "Discover available integration tools for the current channel. " +
+      "Optionally filter by service name (e.g. 'linear', 'github', 'google-calendar'). " +
+      "Returns a list of services or, if a service is specified, the full tool schemas for that service. " +
+      "Call this to learn what integrations are available before using call_tool.",
+    parameters: {
+      type: "object",
+      properties: {
+        service: {
+          type: "string",
+          description:
+            "Optional service name to get detailed tool schemas for (e.g. 'linear', 'github'). " +
+            "Omit to list all available services.",
+        },
+      },
+    },
+    execute: async (
+      _toolCallId: string,
+      args: unknown,
+    ): Promise<ToolResult> => {
+      const parsed =
+        typeof args === "object" && args !== null
+          ? (args as { service?: unknown })
+          : {};
+      const service =
+        typeof parsed.service === "string" && parsed.service.length > 0
+          ? parsed.service
+          : null;
+
+      if (service) {
+        return callAgentApi(
+          "GET",
+          _toolCallId,
+          `/tools?service=${encodeURIComponent(service)}`,
+          "Find tools",
+        );
+      }
+      return callAgentApi("GET", _toolCallId, "/services", "Find tools");
+    },
+  },
+  {
+    name: "call_tool",
+    label: "Call Tool",
+    description:
+      "Execute an integration tool discovered via find_tools. " +
+      "Provide the service name, tool name, and arguments as returned by find_tools.",
+    parameters: {
+      type: "object",
+      properties: {
+        service: {
+          type: "string",
+          description:
+            "The service that owns the tool (e.g. 'linear', 'github')",
+        },
+        name: {
+          type: "string",
+          description: "The tool name to execute (from find_tools results)",
+        },
+        arguments: {
+          type: "object",
+          description: "Arguments for the tool call, matching the tool schema",
+        },
+      },
+      required: ["service", "name"],
+    },
+    execute: async (
+      _toolCallId: string,
+      args: unknown,
+    ): Promise<ToolResult> => {
+      const parsed =
+        typeof args === "object" && args !== null
+          ? (args as {
+              service?: unknown;
+              name?: unknown;
+              arguments?: unknown;
+            })
+          : {};
+      const service = String(parsed.service ?? "");
+      const name = String(parsed.name ?? "");
+      const toolArguments =
+        typeof parsed.arguments === "object" && parsed.arguments !== null
+          ? (parsed.arguments as Record<string, unknown>)
+          : {};
+
+      if (!service || !name) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Error: Both service and name are required.",
+            },
+          ],
+        };
+      }
+
+      return callAgentApi("POST", _toolCallId, "/tools/call", "Call tool", {
+        service,
+        name,
+        arguments: toolArguments,
+      });
+    },
+  },
+  {
     name: "list_databases",
     label: "List Databases",
     description:
@@ -132,7 +245,7 @@ export const agentTools = [
       properties: {},
     },
     execute: async (_toolCallId: string, _args: unknown): Promise<ToolResult> =>
-      callAgentApi("GET", "/postgres", "List databases"),
+      callAgentApi("GET", _toolCallId, "/postgres", "List databases"),
   },
   {
     name: "postgresql_query",
@@ -186,7 +299,7 @@ export const agentTools = [
         };
       }
 
-      return callAgentApi("POST", "/postgres/query", "Query", {
+      return callAgentApi("POST", _toolCallId, "/postgres/query", "Query", {
         integrationId,
         query,
       });
