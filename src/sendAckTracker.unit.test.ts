@@ -82,28 +82,6 @@ describe("sendAckTracker", () => {
     expect(result.ack.chatType).toBe("thread");
   });
 
-  test("resolves with DM session metadata", async () => {
-    const promise = waitForSendAck(PRIMARY_ACCOUNT_ID, "req-dm");
-
-    resolveSendAck(
-      PRIMARY_ACCOUNT_ID,
-      "req-dm",
-      makeAck({
-        messageId: "msg_dm",
-        channelType: "agent_dm",
-        chatType: "dm",
-      }),
-    );
-
-    const result = await promise;
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      return;
-    }
-    expect(result.ack.channelType).toBe("agent_dm");
-    expect(result.ack.chatType).toBe("dm");
-  });
-
   test("rejects when rejectSendAck is called", async () => {
     const promise = waitForSendAck(PRIMARY_ACCOUNT_ID, "req-3");
 

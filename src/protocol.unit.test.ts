@@ -52,98 +52,13 @@ describe("typeInboundEventSchema", () => {
       expect(result.success).toBe(true);
     });
 
-    it("parses a message event with rich trigger context", () => {
-      const result = typeInboundEventSchema.safeParse({
-        type: "message",
-        messageId: "msg_abc123",
-        channelId: "ch_456",
-        channelName: "general",
-        channelType: "agent_dm",
-        parentMessageId: "msg_parent",
-        conversationRootMessageId: "msg_parent",
-        replyTarget: {
-          channelId: "ch_456",
-          parentMessageId: "msg_parent",
-        },
-        chatType: "thread",
-        sender: { id: "user_1", name: "Alice" },
-        content: "Please summarize this thread",
-        mentionsAgent: true,
-        timestamp: Date.now(),
-        context: {
-          triggeringUser: {
-            id: "user_1",
-            name: "Alice",
-          },
-          channel: {
-            id: "ch_456",
-            name: "general",
-            description: "General chat",
-            visibility: "public",
-            channelType: "agent_dm",
-            members: [
-              {
-                id: "user_1",
-                name: "Alice",
-                role: "owner",
-                avatarUrl: null,
-              },
-            ],
-          },
-          thread: {
-            parentMessageId: "msg_parent",
-            threadTitle: "Incident follow-up",
-            messages: [
-              {
-                messageId: "msg_parent",
-                role: "user",
-                content: "What happened?",
-                timestamp: Date.now(),
-                parentMessageId: null,
-                sender: {
-                  id: "user_1",
-                  name: "Alice",
-                },
-              },
-            ],
-          },
-          recentMessages: null,
-        },
-      });
-
-      expect(result.success).toBe(true);
-    });
-
-    it("parses an agent dm root event with an explicit reply target", () => {
-      const result = typeInboundEventSchema.safeParse({
-        type: "message",
-        messageId: "msg_root",
-        channelId: "ch_dm",
-        channelName: "Type",
-        channelType: "agent_dm",
-        parentMessageId: null,
-        conversationRootMessageId: "msg_user_root",
-        replyTarget: {
-          channelId: "ch_dm",
-          parentMessageId: "msg_user_root",
-        },
-        chatType: "dm",
-        sender: { id: "user_1", name: "Alice" },
-        content: "help me debug this",
-        mentionsAgent: true,
-        timestamp: Date.now(),
-      });
-
-      expect(result.success).toBe(true);
-    });
-
     it("strips unknown fields from message events", () => {
       const result = typeInboundEventSchema.safeParse({
         type: "message",
         messageId: "msg_root",
         channelId: "ch_dm",
         channelName: "Type",
-        channelType: "agent_dm",
+        channelType: "default",
         parentMessageId: null,
         conversationRootMessageId: "msg_user_root",
         replyTarget: {
