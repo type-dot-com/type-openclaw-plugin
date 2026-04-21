@@ -210,17 +210,21 @@ const typePlugin = {
   },
 };
 
+type RegisterApi = {
+  runtime: PluginRuntime;
+  registerChannel: (opts: { plugin: typeof typePlugin }) => void;
+};
+
+export function register(api: RegisterApi): void {
+  setPluginRuntime(api.runtime);
+  api.registerChannel({ plugin: typePlugin });
+}
+
 export default {
   id: "type",
   name: "Type",
   description: "Type team chat integration via duplex WebSocket",
-  register(api: {
-    runtime: PluginRuntime;
-    registerChannel: (opts: { plugin: typeof typePlugin }) => void;
-  }) {
-    setPluginRuntime(api.runtime);
-    api.registerChannel({ plugin: typePlugin });
-  },
+  register,
 };
 
 export type { TypeAccountConfig } from "./config.js";
