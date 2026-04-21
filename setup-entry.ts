@@ -32,6 +32,12 @@ const setupPlugin = {
       _cfg: Record<string, unknown>,
     ): boolean => Boolean(account.token) && Boolean(account.agentId),
   },
+
+  // The OpenClaw loader's setup-phase path expects a `register` (or `activate`)
+  // export when the SDK's defineSetupPluginEntry marker isn't used. Full
+  // channel registration happens in src/index.ts at runtime; this no-op keeps
+  // install/setup-phase loads from logging "missing register/activate export".
+  register: () => {},
 };
 
 export default setupPlugin;
