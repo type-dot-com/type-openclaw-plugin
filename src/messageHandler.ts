@@ -6,6 +6,7 @@
  * the standard OpenClaw agent reply pipeline.
  */
 
+import type { PluginRuntime as SdkPluginRuntime } from "openclaw/plugin-sdk/channel-core";
 import { z } from "zod";
 import { resolveApiOriginFromWsUrl } from "./apiOrigin.js";
 import { cleanupScope, runInScope } from "./askUserState.js";
@@ -15,31 +16,7 @@ import { ReplyTextProcessor } from "./replyTextProcessor.js";
 import { type StreamOutbound, StreamSession } from "./streamSession.js";
 import { captureEvent, captureException } from "./telemetry.js";
 
-/**
- * Minimal typing for the OpenClaw plugin SDK runtime.
- */
-export interface PluginRuntime {
-  channel: {
-    reply: {
-      finalizeInboundContext: (
-        ctx: Record<string, unknown>,
-      ) => Record<string, unknown>;
-      dispatchReplyWithBufferedBlockDispatcher: (opts: {
-        ctx: Record<string, unknown>;
-        cfg: Record<string, unknown>;
-        dispatcherOptions: {
-          deliver: (
-            payload: { text?: string },
-            info: Record<string, unknown>,
-          ) => Promise<void>;
-          onSkip?: (payload: unknown, info: Record<string, unknown>) => void;
-          onError?: (err: unknown, info: Record<string, unknown>) => void;
-        };
-        replyOptions?: Record<string, unknown>;
-      }) => Promise<unknown>;
-    };
-  };
-}
+export type PluginRuntime = SdkPluginRuntime;
 
 export interface Logger {
   info: (msg: string) => void;

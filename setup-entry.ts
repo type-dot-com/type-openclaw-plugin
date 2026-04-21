@@ -5,6 +5,7 @@
  * streaming, or other heavy runtime dependencies.
  */
 
+import { defineSetupPluginEntry } from "openclaw/plugin-sdk/channel-core";
 import {
   inspectAccount,
   listAccountIds,
@@ -34,4 +35,4 @@ const setupPlugin = {
   },
 };
 
-export default setupPlugin;
+export default defineSetupPluginEntry(setupPlugin);

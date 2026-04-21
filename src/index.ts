@@ -9,6 +9,7 @@
  * different Type agent.
  */
 
+import { defineChannelPluginEntry } from "openclaw/plugin-sdk/channel-core";
 import { setPluginRuntime } from "./accountState.js";
 import { agentTools } from "./agentTools.js";
 import { fetchChannelsCached } from "./channels.js";
@@ -20,6 +21,12 @@ import {
   isLikelyTypeTargetId,
   normalizeTypeTarget,
 } from "./targetNormalization.js";
+
+const TYPE_MESSAGE_ACTIONS: ReadonlySet<string> = new Set([
+  "send",
+  "reply",
+  "thread-reply",
+]);
 
 const typePlugin = {
   id: "type",
@@ -203,6 +210,65 @@ const typePlugin = {
       sendMediaToType(params),
   },
 
+  actions: {
+    supportsAction: ({ action }: { action: string }): boolean =>
+      TYPE_MESSAGE_ACTIONS.has(action),
+
+    describeMessageTool: (): {
+      actions: string[];
+      capabilities: string[];
+    } => ({
+      actions: [...TYPE_MESSAGE_ACTIONS],
+      capabilities: [],
+    }),
+
+    handleAction: async (ctx: {
+      action: string;
+      params: Record<string, unknown>;
+      cfg?: Record<string, unknown>;
+      accountId?: string | null;
+    }): Promise<{ details: unknown }> => {
+      const readStr = (value: unknown): string | undefined =>
+        typeof value === "string" && value.trim().length > 0
+          ? value.trim()
+          : undefined;
+
+      const to =
+        readStr(ctx.params.to) ??
+        readStr(ctx.params.channelId) ??
+        readStr(ctx.params.target);
+      if (!to) {
+        return {
+          details: {
+            ok: false,
+            error: "Type message action requires a channel target",
+          },
+        };
+      }
+
+      const text =
+        readStr(ctx.params.message) ??
+        readStr(ctx.params.text) ??
+        readStr(ctx.params.content) ??
+        "";
+
+      const replyToId =
+        readStr(ctx.params.replyTo) ??
+        readStr(ctx.params.threadId) ??
+        readStr(ctx.params.parentId) ??
+        readStr(ctx.params.parentMessageId);
+
+      const result = await sendTextToType({
+        to,
+        text,
+        replyToId,
+        accountId: ctx.accountId ?? null,
+        cfg: ctx.cfg,
+      });
+      return { details: result };
+    },
+  },
+
   agentTools,
 
   gateway: {
@@ -210,22 +276,27 @@ const typePlugin = {
   },
 };
 
-type RegisterApi = {
-  runtime: PluginRuntime;
-  registerChannel: (opts: { plugin: typeof typePlugin }) => void;
-};
-
-export function register(api: RegisterApi): void {
-  setPluginRuntime(api.runtime);
-  api.registerChannel({ plugin: typePlugin });
+// Structural interface so the emitted .d.ts doesn't reference the SDK's
+// internal `DefinedChannelPluginEntry` type alias (which isn't exported).
+interface TypeChannelEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly register: (...args: never[]) => void;
+  readonly channelPlugin: typeof typePlugin;
+  readonly configSchema: unknown;
+  readonly setChannelRuntime?: (runtime: PluginRuntime) => void;
 }
 
-export default {
+const typeChannelEntry: TypeChannelEntry = defineChannelPluginEntry({
   id: "type",
   name: "Type",
   description: "Type team chat integration via duplex WebSocket",
-  register,
-};
+  plugin: typePlugin,
+  setRuntime: setPluginRuntime,
+});
+
+export default typeChannelEntry;
 
 export type { TypeAccountConfig } from "./config.js";
 // Re-export components for advanced usage

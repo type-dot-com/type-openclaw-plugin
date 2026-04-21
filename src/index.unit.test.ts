@@ -1,5 +1,9 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { clearAccountState, getAccountState } from "./accountState.js";
+import {
+  clearAccountState,
+  getAccountState,
+  setPluginRuntime,
+} from "./accountState.js";
 import plugin from "./index.js";
 import { handleInboundMessage, type PluginRuntime } from "./messageHandler.js";
 import type { TypeOutboundHandler } from "./outbound.js";
@@ -51,12 +55,8 @@ let registeredPlugin: {
 } | null = null;
 
 beforeAll(() => {
-  plugin.register({
-    runtime,
-    registerChannel({ plugin: registered }) {
-      registeredPlugin = registered;
-    },
-  });
+  setPluginRuntime(runtime);
+  registeredPlugin = plugin.channelPlugin as unknown as typeof registeredPlugin;
 });
 
 afterEach(() => {
