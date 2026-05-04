@@ -856,8 +856,13 @@ export function handleInboundMessage(params: {
                       );
                     },
                   },
+                  // Type renders replies as live token-by-token streams via
+                  // onPartialReply. Opt out of the 2026.5 group/channel
+                  // default of "message_tool_only", which would suppress
+                  // onPartialReply and force one-shot tool-call replies.
                   replyOptions: {
                     disableBlockStreaming: true,
+                    sourceReplyDeliveryMode: "automatic",
                     onPartialReply: (payload: { text?: string }) => {
                       if (!payload.text || session.isFailed) return;
                       processor.processText(payload.text, false);

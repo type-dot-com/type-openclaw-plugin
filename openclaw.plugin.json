@@ -6,21 +6,51 @@
   "channels": ["type"],
   "configSchema": {
     "type": "object",
-    "properties": {
-      "type": {
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "channelConfigs": {
+    "type": {
+      "schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
-        "additionalProperties": false,
         "properties": {
           "enabled": { "type": "boolean" },
           "token": { "type": "string" },
           "wsUrl": { "type": "string" },
           "agentId": { "type": "string" },
+          "mediaLocalRoots": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
           "ownerAllowFrom": {
             "type": "array",
             "items": { "type": "string" }
+          },
+          "accounts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "token": { "type": "string" },
+                "wsUrl": { "type": "string" },
+                "agentId": { "type": "string" },
+                "mediaLocalRoots": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "ownerAllowFrom": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
+            }
           }
         }
-      }
+      },
+      "label": "Type",
+      "description": "Connect OpenClaw to Type team chat via WebSocket."
     }
   }
 }
