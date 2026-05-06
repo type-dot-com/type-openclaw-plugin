@@ -57,6 +57,10 @@ const typeTriggerContextSchema = z.object({
 const typeTriggerFileSchema = z.object({
   id: z.string(),
   filename: z.string(),
+  localPath: z.string().optional(),
+  r2Key: z.string().optional(),
+  url: z.string().url().optional(),
+  downloadUrl: z.string().url().optional(),
   mimeType: z.string(),
   sizeBytes: z.number(),
 });
