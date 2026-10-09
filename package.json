@@ -37,7 +37,7 @@
   },
   "devDependencies": {
     "@types/ws": "^8.5.0",
-    "openclaw": "2026.5.3",
+    "openclaw": "2026.9.9",
     "typescript": "^5.7.3"
   },
   "publishConfig": {
