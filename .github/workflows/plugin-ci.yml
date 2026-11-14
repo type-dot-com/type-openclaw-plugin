@@ -1,0 +1,23 @@
+name: Plugin CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  plugin-checks:
+    name: Plugin typecheck and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+      - run: bun install --ignore-scripts
+      - run: bun run typecheck --outDir .cache/typecheck --tsBuildInfoFile .cache/typecheck/plugin.tsbuildinfo
+      - run: bun test
